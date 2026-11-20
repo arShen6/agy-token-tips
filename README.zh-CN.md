@@ -2,17 +2,28 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-**在 Antigravity 输入框旁，直接查看 token 用量、上下文占用、生成速度和首字等待时间。**
+用 **AGY Token Tips** 启动 Antigravity Desktop，就能在对话输入框旁看到 token 用量、上下文占用、生成速度和首字等待时间。
 
-**下载 → 完整解压 → 运行安装器。** 已内置运行环境，不需要另装 Node.js。
+## macOS · Apple 芯片（M 系列）
 
-| 平台 | 中文解释版 | 英文解释版 | 安装入口 |
+**[下载 Mac 启动器（ZIP）](https://github.com/arShen6/agy-token-tips/raw/refs/heads/main/downloads/AGY-Token-Tips-macos-arm64.zip)**
+
+1. **首次使用用量栏**，先装好 Antigravity Desktop，再下载后台服务（[中文提示版](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-macos-arm64-zh-CN.zip) / [英文提示版](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-macos-arm64-en.zip)）。完整解压，双击一次 `install.command`。已经装过后台服务的用户直接从第 2 步开始。
+2. 解压上方的 **Mac 启动器**，把 `AGY-Token-Tips.app` 移到“应用程序”，再拖到 Dock。
+3. **以后点 Dock 里的 AGY Token Tips 图标启动 Antigravity。** 打开对话发一条消息，首次模型调用完成后，输入框旁就会显示用量。
+
+如果 Antigravity 已经打开，启动器提示需要重开，请先保存工作，再点“已保存，重新打开”。
+
+## Windows 和 Linux · x64（实验版）
+
+先装好 Antigravity Desktop，下载下表对应的压缩包，完整解压后运行一次安装脚本。首次通过启动脚本打开 Antigravity 前，请先保存工作并退出客户端。以后每次完全退出后，用同一个启动脚本打开即可。安装包已内置 Node.js。
+
+| 平台 | 下载后台服务 | 首次安装 | 日常启动 Antigravity |
 | --- | --- | --- | --- |
-| macOS · M 系列 | [下载](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-macos-arm64-zh-CN.zip) | [下载](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-macos-arm64-en.zip) | 双击 `install.command` |
-| Windows · x64（实验版） | [下载](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-windows-x64-zh-CN.zip) | [下载](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-windows-x64-en.zip) | 双击 `install.cmd` |
-| Linux · x64（实验版） | [下载](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-linux-x64-zh-CN.zip) | [下载](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-linux-x64-en.zip) | 运行 `install.sh` |
+| Windows | [中文提示版](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-windows-x64-zh-CN.zip) · [英文提示版](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-windows-x64-en.zip) | 双击 `install.cmd` | 双击 `start-antigravity.cmd` |
+| Linux | [中文提示版](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-linux-x64-zh-CN.zip) · [英文提示版](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-linux-x64-en.zip) | 运行 `bash install.sh` | 运行 `bash start-antigravity.sh` |
 
-参考客户端：**Antigravity 2.32.1**。Windows/Linux 完成基础自动化检查，**尚未经客户端实机验收**；遇到问题欢迎 [提交 Issue](https://github.com/arShen6/agy-token-tips/issues/new?template=bug_report.md)。
+请用普通用户在解压目录中运行脚本。Windows 需要任务计划程序及 Windows PowerShell，Linux 需要带用户级 systemd 的桌面会话。两个平台均已做基础自动化检查，客户端界面仍待实机验证。[反馈兼容性问题](https://github.com/arShen6/agy-token-tips/issues/new?template=bug_report.md)。
 
 ![agy-token-tips 在 Antigravity 中显示速度、等待时间、上下文用量和详细统计](assets/agy-preview.png)
 
@@ -33,15 +44,9 @@
 
 上下文占用达到 **75% 变黄、90% 变红**。底部统一英文缩写，详细解释可选中英文；数据可能在单次调用完成后更新。
 
-## 快速安装
+## 管理后台服务
 
-1. **下载对应平台和语言的安装包。** 不要选择 GitHub 自动生成的 `Source code` 源码包。
-2. **完整解压**，运行上表中的安装器。Linux 可在文件管理器中选择“作为程序运行”；没有此选项时，在解压目录运行 `bash install.sh`。
-3. **打开 Antigravity 对话**，新对话完成首次调用后开始显示。
-
-Windows/Linux 首次连接时，请先保存工作并退出 Antigravity，然后运行 **`start-antigravity.cmd` / `start-antigravity.sh`**，以开启本地调试连接。完全退出应用后如果指标消失，再通过此启动器打开即可。安装器不会关闭正在运行的任务。
-
-后台服务会在登录后自动运行：macOS 使用 LaunchAgent，Windows 使用当前用户的计划任务，Linux 使用用户级 systemd 服务。**Linux 需要已登录的桌面会话和 systemd；Windows 需要任务计划程序及 Windows PowerShell。** 使用普通用户安装即可。
+后台服务会在登录时自动运行。需要切换提示语言、检查状态或卸载时，运行安装包解压目录里的对应脚本。
 
 | 操作 | macOS | Windows | Linux |
 | --- | --- | --- | --- |

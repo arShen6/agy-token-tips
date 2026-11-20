@@ -2,17 +2,28 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-**See token usage, context fill, generation speed and first-token wait — right inside Antigravity Desktop.**
+Open Antigravity Desktop with **AGY Token Tips** to see token usage, context fill, generation speed and first-token wait beside the message box.
 
-**Download → unzip → run the installer.** No separate Node.js installation required.
+## macOS · Apple Silicon
 
-| Platform | English tooltips | Chinese tooltips | Installer |
+**[Download the Mac launcher (.zip)](https://github.com/arShen6/agy-token-tips/raw/refs/heads/main/downloads/AGY-Token-Tips-macos-arm64.zip)**
+
+1. **First time using token tips?** With Antigravity Desktop installed, download the metrics helper with [English tooltips](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-macos-arm64-en.zip) or [Chinese tooltips](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-macos-arm64-zh-CN.zip). Extract the folder and double-click `install.command` once. If you already installed the helper, skip this step.
+2. Unzip the **Mac launcher** linked above, move `AGY-Token-Tips.app` to Applications and add it to your Dock.
+3. **From now on, click AGY Token Tips to open Antigravity.** Send a message. The metrics appear beside the message box after the first model call finishes.
+
+If Antigravity is already open and the launcher asks to reopen it, save your work before choosing **Quit and reopen**.
+
+## Windows and Linux · x64 (experimental)
+
+With Antigravity Desktop installed, extract the ZIP for your platform and run the installer once. Save your work and quit Antigravity before using the launcher for the first time. Use the launcher again after a full exit. All helper downloads include Node.js.
+
+| Platform | Download helper | Install once | Open Antigravity |
 | --- | --- | --- | --- |
-| macOS · Apple Silicon | [Download](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-macos-arm64-en.zip) | [Download](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-macos-arm64-zh-CN.zip) | Double-click `install.command` |
-| Windows · x64 (experimental) | [Download](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-windows-x64-en.zip) | [Download](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-windows-x64-zh-CN.zip) | Double-click `install.cmd` |
-| Linux · x64 (experimental) | [Download](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-linux-x64-en.zip) | [Download](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-linux-x64-zh-CN.zip) | Run `install.sh` |
+| Windows | [English](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-windows-x64-en.zip) · [Chinese](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-windows-x64-zh-CN.zip) | Double-click `install.cmd` | Double-click `start-antigravity.cmd` |
+| Linux | [English](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-linux-x64-en.zip) · [Chinese](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-linux-x64-zh-CN.zip) | Run `bash install.sh` | Run `bash start-antigravity.sh` |
 
-Reference client: **Antigravity 2.32.1**. Windows/Linux have basic automated checks, **not live-client verification**. Please [report issues](https://github.com/arShen6/agy-token-tips/issues/new?template=bug_report.md).
+Run these scripts from the extracted folder as your normal user. Windows requires Task Scheduler and Windows PowerShell. Linux requires a desktop session with user systemd. Both packages have automated checks. Live Antigravity UI compatibility still needs confirmation. [Report an issue](https://github.com/arShen6/agy-token-tips/issues/new?template=bug_report.md).
 
 ![agy-token-tips showing speed, wait time, context usage and detailed statistics in Antigravity](assets/agy-preview.png)
 
@@ -33,15 +44,9 @@ A compact bar beside your composer. Hover for the details — no separate dashbo
 
 Context usage turns **yellow at 75%** and **red at 90%**. The strip stays in English; tooltips are available in English or Chinese. Data may update after a model call completes.
 
-## Quick install
+## Manage the helper
 
-1. **Download your platform and language above.** Choose an installer ZIP, not GitHub's automatic “Source code” archive.
-2. **Extract the entire ZIP**, then run the installer listed above. On Linux, choose **Run as a Program** in your file manager; if unavailable, run `bash install.sh` from that folder.
-3. **Open an Antigravity conversation.** New conversations show data after their first model call.
-
-For a first connection on Windows/Linux, save your work, quit Antigravity, then run **`start-antigravity.cmd` / `start-antigravity.sh`**. This opens Antigravity with local debugging enabled. Use that launcher again after a full app restart if the metrics disappear. The installer never closes active tasks.
-
-The helper starts at login: LaunchAgent on macOS, a current-user scheduled task on Windows, or a user systemd service on Linux. **Linux needs a logged-in desktop session with systemd; Windows needs Task Scheduler and Windows PowerShell.** Install as your normal user.
+The helper starts automatically at login. Use the scripts in the extracted installer folder to change the tooltip language, check status or uninstall.
 
 | Action | macOS | Windows | Linux |
 | --- | --- | --- | --- |
