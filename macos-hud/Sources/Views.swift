@@ -954,15 +954,9 @@ struct DynamicNotchRootView: View {
                 // 4. Footer
                 HStack(spacing: 12) {
                     Toggle(zh ? "悬停直展详情" : "Hover to Expand", isOn: $vm.hoverDirectExpand)
-                        .toggleStyle(.checkbox)
-                        .controlSize(.small)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(Color.white.opacity(0.68))
+                        .toggleStyle(ObsidianCheckboxToggleStyle())
                     Toggle(zh ? "仅 AGY 前台显示" : "Only over AGY", isOn: $vm.onlyWhenAgyActive)
-                        .toggleStyle(.checkbox)
-                        .controlSize(.small)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(Color.white.opacity(0.68))
+                        .toggleStyle(ObsidianCheckboxToggleStyle())
                     Spacer()
                     Text(zh ? "点外部或按 Esc 自动收起 · 右键微岛可退出" : "Click outside or Esc to close · Right-click HUD to quit")
                         .font(.system(size: 10))
@@ -1433,6 +1427,34 @@ struct DynamicNotchRootView: View {
                 .padding(.vertical, 4)
                 .background(Color(red: 0.22, green: 0.74, blue: 0.97))
                 .clipShape(RoundedRectangle(cornerRadius: 6.5, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct ObsidianCheckboxToggleStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Button {
+            configuration.isOn.toggle()
+        } label: {
+            HStack(spacing: 5.5) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 3.5, style: .continuous)
+                        .fill(configuration.isOn ? Color(red: 0.22, green: 0.74, blue: 0.97) : Color.white.opacity(0.08))
+                        .frame(width: 13, height: 13)
+                    RoundedRectangle(cornerRadius: 3.5, style: .continuous)
+                        .stroke(configuration.isOn ? Color(red: 0.22, green: 0.74, blue: 0.97) : Color.white.opacity(0.24), lineWidth: 0.8)
+                        .frame(width: 13, height: 13)
+                    if configuration.isOn {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 8.5, weight: .bold))
+                            .foregroundStyle(Color.black)
+                    }
+                }
+                configuration.label
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.72))
+            }
         }
         .buttonStyle(.plain)
     }
