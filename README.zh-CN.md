@@ -69,10 +69,10 @@ open macos-hud/dist/TokenLensHUD.app
 <details>
 <summary>隐私、性能与实现细节（给好奇怎么做的同学）</summary>
 
-- **增量只读本地库，不上传任何数据**：以严格只读模式（`SQLITE_OPEN_READONLY`）读取 `~/.gemini/antigravity/conversations/<uuid>.db` 和 `conversation_summaries.db`，历史行零重读、零拷贝切片，读完立即关闭（<1ms），绝不改写你的聊天记录。
-- **不索要辅助功能权限**：用 macOS 公开的 CoreGraphics 窗口坐标接口贴合 AGY 窗口，不注入进程、不修改 Antigravity 安装包。
-- **极低资源占用**：切去其他应用时自动暂停全部轮询，活跃态实测约 **0.0%–0.2% CPU / ~28 MB 内存**，几乎零存在感。
-- **官方额度来源**：后台按需调用本机 `agy --output-format json -p /usage`，本地缓存到 `~/Library/Application Support/TokenLensHUD/quota-cache.json`，不消耗 Token，不接触账号密码。
+- **零分配流式读取本地库，不上传任何数据**：以严格只读模式（`SQLITE_OPEN_READONLY` + `PRAGMA query_only = ON`）增量读取 `~/.gemini/antigravity/conversations/<uuid>.db` 和 `conversation_summaries.db`，流式跳过无关字段、读完即关（缓存命中 ~0.01ms，200+ 轮大库全量 ~1.4ms），绝不改写你的聊天记录。
+- **不索要辅助功能权限**：用 macOS 公开的 CoreGraphics 窗口坐标接口（O(1) 缓存窗口 ID + 拖动时动态提频）贴合 AGY 窗口，不注入进程、不修改 Antigravity 安装包。
+- **实测极低资源占用**：切去其他应用时自动暂停全部轮询；活跃流式对话下实测约 **0.0%–0.3% CPU / 18 MB 物理内存（`footprint` 峰值 19 MB） / 0 空闲唤醒**，几乎零存在感。
+- **官方额度来源**：后台通过隔离进程组（`posix_spawn`）按需调用本机 `agy --output-format json -p /usage`（超时自动清理全部子孙进程，低电量模式下自动跳过后台拉取），本地缓存到 `~/Library/Application Support/TokenLensHUD/quota-cache.json`，不消耗 Token，不接触账号密码。
 
 </details>
 

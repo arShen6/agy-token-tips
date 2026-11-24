@@ -1,13 +1,13 @@
 import Foundation
 import SQLite3
 
-struct SectionSample {
+struct SectionSample: Equatable {
     let name: String
     let bytes: Int
     let estTokens: Int
 }
 
-struct GenerationRecord {
+struct GenerationRecord: Equatable {
     let index: Int
     let input: Int
     let output: Int
@@ -21,7 +21,7 @@ struct GenerationRecord {
     let sections: [SectionSample]
 }
 
-struct AnatomyItem: Identifiable {
+struct AnatomyItem: Identifiable, Equatable {
     let id: String
     let labelEn: String
     let labelZh: String
@@ -30,14 +30,14 @@ struct AnatomyItem: Identifiable {
     let percentOfInput: Double
 }
 
-struct ContextAnatomy {
+struct ContextAnatomy: Equatable {
     let totalInputTokens: Int
     let systemOverheadTokens: Int
     let systemOverheadPercent: Double
     let items: [AnatomyItem]
 }
 
-struct CacheDropEvent {
+struct CacheDropEvent: Equatable {
     let callNumber: Int
     let prevRate: Int
     let currRate: Int
@@ -46,7 +46,7 @@ struct CacheDropEvent {
     let toModel: String
 }
 
-struct CallRow: Identifiable {
+struct CallRow: Identifiable, Equatable {
     let id: Int
     let callNumber: Int
     let model: String
@@ -60,7 +60,7 @@ struct CallRow: Identifiable {
     let speed: Double?
 }
 
-struct SubagentUsage: Identifiable {
+struct SubagentUsage: Identifiable, Equatable {
     let id: String
     let name: String
     let model: String
@@ -72,7 +72,7 @@ struct SubagentUsage: Identifiable {
     let isRunning: Bool
 }
 
-struct ConversationSummaryItem: Identifiable, Hashable {
+struct ConversationSummaryItem: Identifiable, Hashable, Equatable {
     let id: String
     let title: String
     let workspaceLabel: String
@@ -81,11 +81,11 @@ struct ConversationSummaryItem: Identifiable, Hashable {
     let childCount: Int
 }
 
-enum ContextLevel {
+enum ContextLevel: Equatable {
     case normal, warning, critical
 }
 
-struct ConversationMetrics {
+struct ConversationMetrics: Equatable {
     let hasData: Bool
     let status: String
     let model: String
@@ -127,7 +127,7 @@ struct ConversationMetrics {
     )
 }
 
-struct HUDSnapshot {
+struct HUDSnapshot: Equatable {
     let conversationId: String?
     let title: String
     let workspaceLabel: String
@@ -138,18 +138,17 @@ struct HUDSnapshot {
     let combinedTotalTokens: Int
     let combinedSubagentTokens: Int
     let recentConversations: [ConversationSummaryItem]
-    let updatedAt: Date
 
     static let initial = HUDSnapshot(
         conversationId: nil, title: "Token Lens", workspaceLabel: "", isRunning: false,
         syncSource: "auto", metrics: .empty, subagents: [], combinedTotalTokens: 0,
-        combinedSubagentTokens: 0, recentConversations: [], updatedAt: Date()
+        combinedSubagentTokens: 0, recentConversations: []
     )
 }
 
-/// Strictly read-only, stat-cached Antigravity SQLite reader.
-/// Opens SQLite only when `.db` or `.db-wal` changes, and closes immediately (<2ms) so
-/// it never holds locks or interferes with Antigravity.
+/// Strictly read-only, incremental, stat-cached Antigravity SQLite reader.
+/// Opens SQLite only when `.db` or `.db-wal` changes, caps cache at 512 KiB, and closes
+/// immediately (<1ms) so it never blocks Antigravity WAL checkpoints.
 final class AntigravityDataStore: @unchecked Sendable {
     private let baseDir: URL
     private let conversationsDir: URL
@@ -167,10 +166,12 @@ final class AntigravityDataStore: @unchecked Sendable {
     }
 
     private struct CachedConversationState {
-        let fingerprint: String
-        let rowCount: Int
+        let fullFingerprint: String
+        let mainDbFingerprint: String
         let maxIdx: Int
+        let minIdx: Int
         let records: [GenerationRecord]
+        let latestSections: (idx: Int, sections: [SectionSample])?
         let metrics: ConversationMetrics
     }
 
@@ -178,6 +179,7 @@ final class AntigravityDataStore: @unchecked Sendable {
     private var lastSummaryReadAt: TimeInterval = 0
     private var summariesById: [String: RawSummary] = [:]
     private var childrenByParent: [String: [RawSummary]] = [:]
+    private var descendantsCache: [String: [RawSummary]] = [:]
     private var summaryList: [RawSummary] = []
     private var cachedRootCandidates: [ConversationSummaryItem] = []
 
@@ -195,6 +197,21 @@ final class AntigravityDataStore: @unchecked Sendable {
         return f
     }()
 
+    // Cached passive DevToolsActivePort probe (avoids 1Hz HTTP spam & URLCache bloat)
+    private var portFileFingerprint = ""
+    private var cachedDevToolsPort: Int? = nil
+    private var lastRouteCheckAt: TimeInterval = 0
+    private var cachedRouteConvId: String? = nil
+    private lazy var loopbackSession: URLSession = {
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.urlCache = nil
+        cfg.httpCookieStorage = nil
+        cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
+        cfg.timeoutIntervalForRequest = 0.2
+        cfg.timeoutIntervalForResource = 0.25
+        return URLSession(configuration: cfg)
+    }()
+
     private static let uuidRegex = try! NSRegularExpression(
         pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
         options: .caseInsensitive
@@ -205,37 +222,81 @@ final class AntigravityDataStore: @unchecked Sendable {
         options: .caseInsensitive
     )
 
-    init() {
+    init(baseDir: URL? = nil) {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        self.baseDir = home.appendingPathComponent(".gemini/antigravity", isDirectory: true)
-        self.conversationsDir = baseDir.appendingPathComponent("conversations", isDirectory: true)
-        self.summariesDbPath = baseDir.appendingPathComponent("conversation_summaries.db").path
+        let resolvedBase = baseDir ?? home.appendingPathComponent(".gemini/antigravity", isDirectory: true)
+        self.baseDir = resolvedBase
+        self.conversationsDir = resolvedBase.appendingPathComponent("conversations", isDirectory: true)
+        self.summariesDbPath = resolvedBase.appendingPathComponent("conversation_summaries.db").path
         self.devToolsPortFile = home
             .appendingPathComponent("Library/Application Support/Antigravity/DevToolsActivePort")
             .path
     }
 
-    /// Passive read-only HTTP GET to localhost /json/list when DevToolsActivePort exists.
-    /// Zero WebSocket connection, zero script injection, zero DOM mutation; degrades silently if absent.
-    private func detectWindowConversationId() -> String? {
+    private func singleFileFingerprint(_ path: String) -> String {
+        var st = stat()
+        if stat(path, &st) == 0 {
+            return "\(st.st_ino):\(st.st_size):\(st.st_mtimespec.tv_sec).\(st.st_mtimespec.tv_nsec)"
+        }
+        return "-"
+    }
+
+    private func statFingerprint(_ dbPath: String) -> (full: String, main: String) {
+        let mainFp = singleFileFingerprint(dbPath)
+        let walFp = singleFileFingerprint("\(dbPath)-wal")
+        return ("\(mainFp)|\(walFp)", mainFp)
+    }
+
+    private func readDevToolsPortIfPresent() -> Int? {
+        let fp = singleFileFingerprint(devToolsPortFile)
+        if fp == "-" {
+            portFileFingerprint = "-"
+            cachedDevToolsPort = nil
+            return nil
+        }
+        if fp == portFileFingerprint {
+            return cachedDevToolsPort
+        }
+        portFileFingerprint = fp
         guard let raw = try? String(contentsOfFile: devToolsPortFile, encoding: .utf8),
               let firstLine = raw.split(whereSeparator: \.isNewline).first,
               let port = Int(firstLine.trimmingCharacters(in: .whitespaces)),
-              port > 0 && port <= 65535,
-              let url = URL(string: "http://127.0.0.1:\(port)/json/list") else {
+              port >= 1 && port <= 65535 else {
+            cachedDevToolsPort = nil
             return nil
         }
+        cachedDevToolsPort = port
+        return port
+    }
 
+    /// Passive read-only HTTP GET to localhost /json/list when DevToolsActivePort exists.
+    /// Throttled to <= once every 2.5s (unless forced on focus/open), race-free locked box, cancels on timeout.
+    private func detectWindowConversationId(forceProbe: Bool) -> String? {
+        guard let port = readDevToolsPortIfPresent() else {
+            cachedRouteConvId = nil
+            return nil
+        }
+        let now = Date().timeIntervalSinceReferenceDate
+        if !forceProbe && (now - lastRouteCheckAt) < 2.5 {
+            return cachedRouteConvId
+        }
+        lastRouteCheckAt = now
+
+        guard let url = URL(string: "http://127.0.0.1:\(port)/json/list") else { return nil }
+
+        final class Box: @unchecked Sendable {
+            let lock = NSLock()
+            var value: String? = nil
+        }
+        let box = Box()
         let sem = DispatchSemaphore(value: 0)
-        var foundId: String? = nil
-        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 0.2)
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 0.18)
         req.httpMethod = "GET"
 
-        let task = URLSession.shared.dataTask(with: req) { data, _, _ in
+        let task = loopbackSession.dataTask(with: req) { data, _, _ in
             defer { sem.signal() }
             guard let data,
                   let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return }
-            // Prefer primary `page` target whose URL contains `/c/<uuid>`
             for target in list {
                 let type = (target["type"] as? String) ?? ""
                 let pageUrl = (target["url"] as? String) ?? ""
@@ -243,30 +304,28 @@ final class AntigravityDataStore: @unchecked Sendable {
                 let ns = pageUrl as NSString
                 if let match = Self.routeUUIDRegex.firstMatch(in: pageUrl, options: [], range: NSRange(location: 0, length: ns.length)),
                    match.numberOfRanges >= 2 {
-                    foundId = ns.substring(with: match.range(at: 1))
+                    let extracted = ns.substring(with: match.range(at: 1))
+                    box.lock.lock()
+                    box.value = extracted
+                    box.lock.unlock()
                     return
                 }
             }
         }
         task.resume()
-        _ = sem.wait(timeout: .now() + 0.22)
-        return foundId
+        if sem.wait(timeout: .now() + 0.20) == .timedOut {
+            task.cancel()
+        }
+        box.lock.lock()
+        let result = box.value
+        box.lock.unlock()
+        cachedRouteConvId = result
+        return result
     }
 
     private func isValidUUID(_ s: String) -> Bool {
         let range = NSRange(location: 0, length: s.utf16.count)
         return Self.uuidRegex.firstMatch(in: s, options: [], range: range) != nil
-    }
-
-    private func statFingerprint(_ dbPath: String) -> String {
-        let paths = [dbPath, "\(dbPath)-wal"]
-        return paths.map { p -> String in
-            var st = stat()
-            if stat(p, &st) == 0 {
-                return "\(st.st_ino):\(st.st_size):\(st.st_mtimespec.tv_sec).\(st.st_mtimespec.tv_nsec)"
-            }
-            return "-"
-        }.joined(separator: "|")
     }
 
     private func fileLiveMtimeMs(_ dbPath: String) -> Double {
@@ -289,8 +348,8 @@ final class AntigravityDataStore: @unchecked Sendable {
             if let db { sqlite3_close(db) }
             return nil
         }
-        sqlite3_busy_timeout(handle, 60)
-        sqlite3_exec(handle, "PRAGMA query_only = ON;", nil, nil, nil)
+        sqlite3_busy_timeout(handle, 50)
+        sqlite3_exec(handle, "PRAGMA query_only = ON; PRAGMA cache_size = -512; PRAGMA mmap_size = 0;", nil, nil, nil)
         return handle
     }
 
@@ -306,7 +365,7 @@ final class AntigravityDataStore: @unchecked Sendable {
         } else {
             ms = 0
         }
-        if isoMsCache.count > 2048 { isoMsCache.removeAll(keepingCapacity: true) }
+        if isoMsCache.count > 1024 { isoMsCache.removeAll(keepingCapacity: true) }
         isoMsCache[raw] = ms
         return ms
     }
@@ -323,16 +382,15 @@ final class AntigravityDataStore: @unchecked Sendable {
         } else {
             label = ""
         }
-        if workspaceLabelCache.count > 512 { workspaceLabelCache.removeAll(keepingCapacity: true) }
+        if workspaceLabelCache.count > 256 { workspaceLabelCache.removeAll(keepingCapacity: true) }
         workspaceLabelCache[jsonStr] = label
         return label
     }
 
-    private func loadSummariesIfNeeded() {
+    private func loadSummariesIfNeeded(force: Bool = false) {
         let now = Date().timeIntervalSinceReferenceDate
-        // Avoid full summary scans more than once per 2.5s while WAL streams continuously
-        if !summaryList.isEmpty && (now - lastSummaryReadAt) < 2.5 { return }
-        let fp = statFingerprint(summariesDbPath)
+        if !force && !summaryList.isEmpty && (now - lastSummaryReadAt) < 2.5 { return }
+        let fp = statFingerprint(summariesDbPath).full
         if fp.hasPrefix("-|") || fp == summaryFingerprint { return }
         lastSummaryReadAt = now
         guard let db = openReadOnly(summariesDbPath) else { return }
@@ -356,25 +414,27 @@ final class AntigravityDataStore: @unchecked Sendable {
         }
 
         while sqlite3_step(stmt) == SQLITE_ROW {
-            let id = colStr(0)
-            guard isValidUUID(id) else { continue }
-            let title = colStr(1).trimmingCharacters(in: .whitespacesAndNewlines)
-            let lm = parseIsoMs(colStr(2))
-            let ws = parseWorkspaceLabel(colStr(3))
-            let running = colStr(4) == "CASCADE_RUN_STATUS_RUNNING"
-            let agentName = colStr(5).trimmingCharacters(in: .whitespacesAndNewlines)
-            let parentRaw = colStr(6)
-            let parentId = isValidUUID(parentRaw) ? parentRaw : ""
+            autoreleasepool {
+                let id = colStr(0)
+                guard isValidUUID(id) else { return }
+                let title = colStr(1).trimmingCharacters(in: .whitespacesAndNewlines)
+                let lm = parseIsoMs(colStr(2))
+                let ws = parseWorkspaceLabel(colStr(3))
+                let running = colStr(4) == "CASCADE_RUN_STATUS_RUNNING"
+                let agentName = colStr(5).trimmingCharacters(in: .whitespacesAndNewlines)
+                let parentRaw = colStr(6)
+                let parentId = isValidUUID(parentRaw) ? parentRaw : ""
 
-            let item = RawSummary(
-                id: id, title: title, workspaceLabel: ws,
-                isRunning: running, lastModifiedMs: lm,
-                agentName: agentName, parentId: parentId
-            )
-            byId[id] = item
-            list.append(item)
-            if !parentId.isEmpty {
-                children[parentId, default: []].append(item)
+                let item = RawSummary(
+                    id: id, title: title, workspaceLabel: ws,
+                    isRunning: running, lastModifiedMs: lm,
+                    agentName: agentName, parentId: parentId
+                )
+                byId[id] = item
+                list.append(item)
+                if !parentId.isEmpty {
+                    children[parentId, default: []].append(item)
+                }
             }
         }
 
@@ -382,6 +442,7 @@ final class AntigravityDataStore: @unchecked Sendable {
         self.summaryFingerprint = fp
         self.summariesById = byId
         self.childrenByParent = children
+        self.descendantsCache.removeAll(keepingCapacity: true)
         self.summaryList = list
 
         var rootsMap: [String: ConversationSummaryItem] = [:]
@@ -426,6 +487,7 @@ final class AntigravityDataStore: @unchecked Sendable {
     }
 
     private func collectDescendants(_ rootId: String) -> [RawSummary] {
+        if let cached = descendantsCache[rootId] { return cached }
         var out: [RawSummary] = []
         var queue = childrenByParent[rootId] ?? []
         var seen: Set<String> = [rootId]
@@ -438,13 +500,16 @@ final class AntigravityDataStore: @unchecked Sendable {
                 queue.append(contentsOf: grand)
             }
         }
+        descendantsCache[rootId] = out
         return out
     }
 
-    private func readConversationMetrics(_ id: String) -> ConversationMetrics {
+    /// Reads conversation metrics incrementally with strict fallback to full scan on checkpoint/compaction.
+    /// Preserves `latestSections` across incremental updates so Context Anatomy never disappears.
+    func readConversationMetrics(_ id: String, forceFullScan: Bool = false) -> ConversationMetrics {
         let dbPath = conversationsDir.appendingPathComponent("\(id).db").path
         let fp = statFingerprint(dbPath)
-        if fp.hasPrefix("-|") {
+        if fp.main == "-" {
             return ConversationMetrics(
                 hasData: false, status: "missing", model: "—", speed: nil, isStreamMode: true,
                 endToEndSpeed: nil, waitSeconds: nil, streamSeconds: nil, totalSeconds: nil,
@@ -455,7 +520,7 @@ final class AntigravityDataStore: @unchecked Sendable {
                 runwayCallsLeft: nil, runwayGrowthPerCall: 0, recentCalls: []
             )
         }
-        if let cached = metricsCache[id], cached.fingerprint == fp {
+        if !forceFullScan, let cached = metricsCache[id], cached.fullFingerprint == fp.full {
             return cached.metrics
         }
 
@@ -464,26 +529,45 @@ final class AntigravityDataStore: @unchecked Sendable {
         }
         defer { sqlite3_close(db) }
 
-        // Check row count & max idx first (O(1) on SQLite B-tree) for true incremental reads!
-        var rowCount = 0
+        // O(log n) B-tree boundary check instead of O(n) COUNT(*)
         var dbMaxIdx = -1
+        var dbMinIdx = -1
         var metaStmt: OpaquePointer?
-        if sqlite3_prepare_v2(db, "SELECT COUNT(*), COALESCE(MAX(idx), -1) FROM gen_metadata;", -1, &metaStmt, nil) == SQLITE_OK, let metaStmt {
+        if sqlite3_prepare_v2(db, "SELECT COALESCE(MAX(idx), -1), COALESCE(MIN(idx), -1) FROM gen_metadata;", -1, &metaStmt, nil) == SQLITE_OK, let metaStmt {
             if sqlite3_step(metaStmt) == SQLITE_ROW {
-                rowCount = Int(sqlite3_column_int64(metaStmt, 0))
-                dbMaxIdx = Int(sqlite3_column_int64(metaStmt, 1))
+                dbMaxIdx = Int(sqlite3_column_int64(metaStmt, 0))
+                dbMinIdx = Int(sqlite3_column_int64(metaStmt, 1))
             }
             sqlite3_finalize(metaStmt)
         }
 
+        if dbMaxIdx < 0 {
+            let empty = ConversationMetrics.empty
+            metricsCache[id] = CachedConversationState(
+                fullFingerprint: fp.full, mainDbFingerprint: fp.main,
+                maxIdx: -1, minIdx: -1, records: [], latestSections: nil, metrics: empty
+            )
+            return empty
+        }
+
+        // Incremental path: allowed ONLY when main `.db` file didn't rewrite/checkpoint AND indices grew monotonically.
+        // Always re-reads the last 3 rows (idx >= cached.maxIdx - 2) to catch in-place streaming UPDATEs!
         var records: [GenerationRecord]
+        var latestSections: (idx: Int, sections: [SectionSample])?
         let startIdx: Int
-        if let cached = metricsCache[id], rowCount >= cached.rowCount, cached.maxIdx >= 0, dbMaxIdx >= cached.maxIdx {
-            // Keep all historical rows unchanged; only re-read the tail row + any brand-new rows!
-            records = cached.records.filter { $0.index < cached.maxIdx }
-            startIdx = cached.maxIdx
+        if !forceFullScan,
+           let cached = metricsCache[id],
+           cached.mainDbFingerprint == fp.main,
+           cached.maxIdx >= 0,
+           dbMinIdx == cached.minIdx,
+           dbMaxIdx >= cached.maxIdx {
+            let tailStart = max(dbMinIdx, cached.maxIdx - 2)
+            records = cached.records.filter { $0.index < tailStart }
+            latestSections = cached.latestSections
+            startIdx = tailStart
         } else {
             records = []
+            latestSections = nil
             startIdx = Int.min
         }
 
@@ -499,31 +583,68 @@ final class AntigravityDataStore: @unchecked Sendable {
             sqlite3_bind_int64(stmt, 1, Int64(startIdx))
         }
 
-        // Only parse heavy 100KB+ prompt sections on the latest 2 rows!
-        let sectionCutoffIdx = max(0, dbMaxIdx - 1)
+        // On full scan: parse sections on the last 4 rows (and if none had sections, latest non-empty survives in subsequent incremental ticks).
+        // On incremental scan: parse sections on all newly fetched rows (usually 1-4 rows), never discarding previously captured non-empty sections!
+        let sectionCutoffIdx = (startIdx == Int.min) ? max(0, dbMaxIdx - 3) : startIdx
         while sqlite3_step(stmt) == SQLITE_ROW {
             autoreleasepool {
                 let idx = Int(sqlite3_column_int64(stmt, 0))
                 let len = Int(sqlite3_column_bytes(stmt, 1))
-                if len > 0, let rawPtr = sqlite3_column_blob(stmt, 1) {
-                    let data = Data(bytesNoCopy: UnsafeMutableRawPointer(mutating: rawPtr), count: len, deallocator: .none)
-                    let parseSec = (idx >= sectionCutoffIdx)
-                    if let rec = ProtobufDecoder.decodeGeneration(idx: idx, data: data, includeSections: parseSec) {
+                guard len > 0, let rawPtr = sqlite3_column_blob(stmt, 1) else { return }
+                let buf = UnsafeRawBufferPointer(start: rawPtr, count: len)
+                let parseSec = (idx >= sectionCutoffIdx)
+                if let rec = ProtobufDecoder.decodeGeneration(idx: idx, buffer: buf, includeSections: parseSec) {
+                    if !rec.sections.isEmpty {
+                        latestSections = (idx, rec.sections)
+                    }
+                    // Strip heavy sections array from stored records to keep memory compact;
+                    // we hold the single latest non-empty sections separately.
+                    if rec.sections.isEmpty {
                         records.append(rec)
+                    } else {
+                        records.append(GenerationRecord(
+                            index: rec.index, input: rec.input, output: rec.output, cached: rec.cached,
+                            thinking: rec.thinking, response: rec.response, waitSeconds: rec.waitSeconds,
+                            streamSeconds: rec.streamSeconds, contextLimit: rec.contextLimit,
+                            modelDisplay: rec.modelDisplay, sections: []
+                        ))
                     }
                 }
             }
         }
 
-        let summary = summarize(records)
-        if metricsCache.count > 16 {
-            metricsCache.removeValue(forKey: metricsCache.keys.first!)
+        // If full scan's last 4 rows had no sections at all, probe backward for the latest row containing field 16 (one-time per DB)
+        if startIdx == Int.min && latestSections == nil && dbMaxIdx > 3 {
+            var revStmt: OpaquePointer?
+            let revSql = "SELECT idx, data FROM gen_metadata WHERE idx < ? ORDER BY idx DESC LIMIT 12;"
+            if sqlite3_prepare_v2(db, revSql, -1, &revStmt, nil) == SQLITE_OK, let revStmt {
+                defer { sqlite3_finalize(revStmt) }
+                sqlite3_bind_int64(revStmt, 1, Int64(sectionCutoffIdx))
+                while sqlite3_step(revStmt) == SQLITE_ROW {
+                    let idx = Int(sqlite3_column_int64(revStmt, 0))
+                    let len = Int(sqlite3_column_bytes(revStmt, 1))
+                    guard len > 0, let rawPtr = sqlite3_column_blob(revStmt, 1) else { continue }
+                    let buf = UnsafeRawBufferPointer(start: rawPtr, count: len)
+                    if let rec = ProtobufDecoder.decodeGeneration(idx: idx, buffer: buf, includeSections: true),
+                       !rec.sections.isEmpty {
+                        latestSections = (idx, rec.sections)
+                        break
+                    }
+                }
+            }
+        }
+
+        let summary = summarize(records, latestSections: latestSections?.sections)
+        if metricsCache.count >= 12, metricsCache[id] == nil, let oldestKey = metricsCache.keys.first {
+            metricsCache.removeValue(forKey: oldestKey)
         }
         metricsCache[id] = CachedConversationState(
-            fingerprint: fp,
-            rowCount: rowCount,
+            fullFingerprint: fp.full,
+            mainDbFingerprint: fp.main,
             maxIdx: dbMaxIdx,
+            minIdx: dbMinIdx,
             records: records,
+            latestSections: latestSections,
             metrics: summary
         )
         return summary
@@ -546,9 +667,8 @@ final class AntigravityDataStore: @unchecked Sendable {
         return (plausible ? streaming : e2e, plausible, e2e, elapsed)
     }
 
-    private func computeAnatomy(_ calls: [GenerationRecord]) -> ContextAnatomy? {
-        guard let secCall = calls.last(where: { !$0.sections.isEmpty }),
-              let latest = calls.last else { return nil }
+    private func computeAnatomy(latest: GenerationRecord, sections: [SectionSample]?) -> ContextAnatomy? {
+        guard let sections, !sections.isEmpty else { return nil }
         let totalIn = latest.input + latest.cached
         guard totalIn > 0 else { return nil }
 
@@ -570,7 +690,7 @@ final class AntigravityDataStore: @unchecked Sendable {
 
         var buckets: [String: Int] = [:]
         var rawSum = 0
-        for s in secCall.sections {
+        for s in sections {
             let k = coreSet.contains(s.name) ? "core_prompt" : s.name
             buckets[k, default: 0] += s.estTokens
             rawSum += s.estTokens
@@ -604,7 +724,7 @@ final class AntigravityDataStore: @unchecked Sendable {
         )
     }
 
-    private func summarize(_ records: [GenerationRecord]) -> ConversationMetrics {
+    private func summarize(_ records: [GenerationRecord], latestSections: [SectionSample]?) -> ConversationMetrics {
         let calls = records.filter { $0.input > 0 || $0.cached > 0 || $0.output > 0 }
         guard let last = calls.last else { return .empty }
 
@@ -625,7 +745,6 @@ final class AntigravityDataStore: @unchecked Sendable {
         }
         let cachePct: Double? = (tIn + tCached) > 0 ? 100.0 * Double(tCached) / Double(tIn + tCached) : nil
 
-        // Cache drops
         var drops: [CacheDropEvent] = []
         if calls.count >= 2 {
             for i in 1..<calls.count {
@@ -647,7 +766,6 @@ final class AntigravityDataStore: @unchecked Sendable {
             }
         }
 
-        // Runway
         var runwayCalls: Int? = nil
         var runwayGrowth = 0
         if let lim = limit, calls.count >= 3 {
@@ -692,14 +810,14 @@ final class AntigravityDataStore: @unchecked Sendable {
             totalCalls: calls.count, totalInput: tIn, totalCached: tCached,
             totalOutput: tOut, totalThinking: tThink, totalResponse: tResp,
             totalTokens: tIn + tCached + tOut, cachePercent: cachePct,
-            anatomy: computeAnatomy(calls), cacheDrops: drops,
+            anatomy: computeAnatomy(latest: last, sections: latestSections), cacheDrops: drops,
             runwayCallsLeft: runwayCalls, runwayGrowthPerCall: runwayGrowth,
             recentCalls: recent
         )
     }
 
-    func fetchSnapshot(pinnedId: String?) -> HUDSnapshot {
-        loadSummariesIfNeeded()
+    func fetchSnapshot(pinnedId: String?, forceRouteProbe: Bool = false) -> HUDSnapshot {
+        loadSummariesIfNeeded(force: forceRouteProbe)
 
         var candidates = cachedRootCandidates
 
@@ -708,12 +826,11 @@ final class AntigravityDataStore: @unchecked Sendable {
         if let pin = pinnedId, isValidUUID(pin) {
             targetId = pin
             syncSource = "pinned"
-        } else if let winId = detectWindowConversationId(), isValidUUID(winId) {
+        } else if let winId = detectWindowConversationId(forceProbe: forceRouteProbe), isValidUUID(winId) {
             targetId = resolveRootId(winId)
             syncSource = "window"
         } else {
-            // Only stat recent `.db-wal` files when falling back to auto-mtime ordering
-            for i in 0..<min(10, candidates.count) {
+            for i in 0..<min(8, candidates.count) {
                 let cid = candidates[i].id
                 var bestMs = max(candidates[i].activityMs, fileLiveMtimeMs(conversationsDir.appendingPathComponent("\(cid).db").path))
                 for ch in childrenByParent[cid] ?? [] {
@@ -736,7 +853,7 @@ final class AntigravityDataStore: @unchecked Sendable {
             return HUDSnapshot(
                 conversationId: nil, title: "Token Lens", workspaceLabel: "", isRunning: false,
                 syncSource: syncSource, metrics: .empty, subagents: [], combinedTotalTokens: 0,
-                combinedSubagentTokens: 0, recentConversations: candidates, updatedAt: Date()
+                combinedSubagentTokens: 0, recentConversations: candidates
             )
         }
 
@@ -769,8 +886,7 @@ final class AntigravityDataStore: @unchecked Sendable {
             subagents: subagents,
             combinedTotalTokens: metrics.totalTokens + subTokens,
             combinedSubagentTokens: subTokens,
-            recentConversations: candidates,
-            updatedAt: Date()
+            recentConversations: candidates
         )
     }
 }

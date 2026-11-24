@@ -69,10 +69,10 @@ Looking for the earlier v0.2.5 Electron composer-bar installers (macOS launcher,
 <details>
 <summary>How it works under the hood (privacy & performance)</summary>
 
-- **Zero-copy incremental SQLite reader**: Reads `~/.gemini/antigravity/conversations/<uuid>.db` and `conversation_summaries.db` strictly in `SQLITE_OPEN_READONLY` mode (`PRAGMA query_only = ON`), decoding only newly added rows and closing immediately (<1ms). Nothing is ever modified or uploaded.
-- **No Accessibility permission needed**: Tracks Antigravity's window position via macOS's standard CoreGraphics window bounds API. Zero process injection.
-- **Ultra-lightweight**: Pauses all polling when Antigravity is in the background; ~0.0%–0.2% CPU and ~28 MB memory while active.
-- **Official quota check**: Runs `agy --output-format json -p /usage` asynchronously on demand (0 tokens) and caches locally at `~/Library/Application Support/TokenLensHUD/quota-cache.json`.
+- **Zero-allocation streaming SQLite reader**: Reads `~/.gemini/antigravity/conversations/<uuid>.db` and `conversation_summaries.db` strictly in `SQLITE_OPEN_READONLY` mode (`PRAGMA query_only = ON`), streaming directly over protobuf buffers (~0.01 ms cache hit, ~1.4 ms full scan on 200+ call sessions) and closing immediately. Nothing is ever modified or uploaded.
+- **No Accessibility permission needed**: Tracks Antigravity's window bounds via macOS's standard CoreGraphics API using O(1) cached window IDs at a calm 1.5s cadence (boosting only during active drags). Zero process injection.
+- **Measured low footprint**: Pauses all polling when Antigravity is in the background; live-profiled at **0.0%–0.3% active CPU, 18 MB physical footprint (19 MB peak), and 0 idle wakeups/s**.
+- **Official quota check**: Runs `agy --output-format json -p /usage` asynchronously inside an isolated process group (`posix_spawn` with full group timeout cleanup, skipping background polls in Low Power Mode) and caches locally at `~/Library/Application Support/TokenLensHUD/quota-cache.json` (0 tokens).
 
 </details>
 

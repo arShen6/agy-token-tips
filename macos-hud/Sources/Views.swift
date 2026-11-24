@@ -203,24 +203,27 @@ final class HUDViewModel: ObservableObject {
         quotaSnapshot?.group(for: activeModelFamily)
     }
 
-    private var isPollingPaused = false
+    private var isPollingPaused = true
+    private var quotaTimerStarted = false
 
-    func startPolling() {
-        refreshNow()
-        resumePolling()
+    func startQuotaScheduler() {
+        guard !quotaTimerStarted else { return }
+        quotaTimerStarted = true
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            self?.refreshQuota(force: false, maxAge: 180)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            guard let self, !self.isPollingPaused || self.notchState == .expanded else { return }
+            self.refreshQuota(force: false, maxAge: 180)
         }
 
         quotaTimer?.invalidate()
-        let qt = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+        let qt = Timer(timeInterval: 300, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, !self.isPollingPaused || self.notchState == .expanded else { return }
                 self.refreshQuota(force: false, maxAge: 290)
             }
         }
-        qt.tolerance = 30
+        qt.tolerance = 45
+        RunLoop.main.add(qt, forMode: .common)
         quotaTimer = qt
     }
 
@@ -234,42 +237,26 @@ final class HUDViewModel: ObservableObject {
     func resumePolling() {
         isPollingPaused = false
         if timer != nil { return }
-        let t = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshNow() }
         }
         t.tolerance = 0.25
+        RunLoop.main.add(t, forMode: .common)
         timer = t
     }
 
-    private func snapshotDidMeaningfullyChange(old: HUDSnapshot, new: HUDSnapshot) -> Bool {
-        if old.conversationId != new.conversationId { return true }
-        if old.title != new.title { return true }
-        if old.isRunning != new.isRunning { return true }
-        if old.syncSource != new.syncSource { return true }
-        if old.subagents.count != new.subagents.count { return true }
-        if old.combinedTotalTokens != new.combinedTotalTokens { return true }
-        if old.recentConversations.count != new.recentConversations.count { return true }
-        let om = old.metrics, nm = new.metrics
-        if om.hasData != nm.hasData { return true }
-        if om.totalCalls != nm.totalCalls { return true }
-        if om.totalTokens != nm.totalTokens { return true }
-        if om.ctxUsed != nm.ctxUsed { return true }
-        if om.model != nm.model { return true }
-        if om.latestOutput != nm.latestOutput { return true }
-        return false
-    }
-
-    func refreshNow() {
+    func refreshNow(forceRouteProbe: Bool = false) {
         guard !isFetching else { return }
         isFetching = true
         let pin = pinnedConversationId
         let dataStore = self.store
         ioQueue.async { [weak self] in
-            let next = dataStore.fetchSnapshot(pinnedId: pin)
+            let next = dataStore.fetchSnapshot(pinnedId: pin, forceRouteProbe: forceRouteProbe)
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.isFetching = false
-                guard self.snapshotDidMeaningfullyChange(old: self.snapshot, new: next) else { return }
+                // Exact synthesized Equatable check — catches speed/TTFT/cache/in-place updates too!
+                guard self.snapshot != next else { return }
 
                 let layoutChanged = self.snapshot.conversationId != next.conversationId
                     || self.snapshot.subagents.count != next.subagents.count
@@ -280,7 +267,7 @@ final class HUDViewModel: ObservableObject {
                 let nextFamily = QuotaModelFamily.infer(from: next.metrics.model)
                 if nextFamily != .unknown && nextFamily != self.lastModelFamily {
                     self.lastModelFamily = nextFamily
-                    self.refreshQuota(force: false, maxAge: 60)
+                    self.refreshQuota(force: false, maxAge: 120)
                 }
 
                 if layoutChanged && self.notchState == .expanded {
@@ -925,17 +912,13 @@ struct DynamicNotchRootView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                 }
 
-                // 2. Official Quota (isolated 1s TimelineView) + Optional Swarm Tree
+                // 2. Official Quota (zero-recompute card; only leaf countdown Text ticks!) + Optional Swarm Tree
                 if s.subagents.isEmpty {
-                    TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                        quotaSectionCard(now: ctx.date, sideBySideGroups: true)
-                    }
+                    quotaSectionCard(sideBySideGroups: true)
                 } else {
                     HStack(alignment: .top, spacing: 9) {
-                        TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                            quotaSectionCard(now: ctx.date, sideBySideGroups: false)
-                        }
-                        .frame(maxWidth: .infinity)
+                        quotaSectionCard(sideBySideGroups: false)
+                            .frame(maxWidth: .infinity)
                         swarmTreeCard(s: s, m: m)
                             .frame(width: 248)
                     }
@@ -997,11 +980,10 @@ struct DynamicNotchRootView: View {
 
     // MARK: Obsidian Sub-Cards
 
-    private func quotaSectionCard(now: Date, sideBySideGroups: Bool) -> some View {
+    private func quotaSectionCard(sideBySideGroups: Bool) -> some View {
         let snap = vm.quotaSnapshot
         let activeFam = vm.activeModelFamily
-        let ageSec = snap.map { max(0, now.timeIntervalSince($0.fetchedAt)) } ?? 0
-        let isStale = snap != nil && ageSec > 600
+        let renderNow = Date()
 
         return VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 6) {
@@ -1010,16 +992,17 @@ struct DynamicNotchRootView: View {
                     .foregroundStyle(Color.white.opacity(0.92))
 
                 if vm.quotaState == .loading {
-                    ProgressView()
-                        .controlSize(.mini)
-                        .scaleEffect(0.72)
-                    Text(zh ? "查询中…" : "Checking…")
-                        .font(.system(size: 10))
-                        .foregroundStyle(Color.white.opacity(0.48))
-                } else if let snap {
-                    Text(fmtQuotaAge(snap.fetchedAt, at: now, zh: zh))
+                    // Static subtle indicator instead of 120Hz ProgressView spinner
+                    Text(zh ? "· 更新中…" : "· Updating…")
                         .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(isStale ? Color(red: 0.96, green: 0.62, blue: 0.14) : Color.white.opacity(0.45))
+                        .foregroundStyle(Color(red: 0.22, green: 0.74, blue: 0.97).opacity(0.85))
+                } else if let snap {
+                    TimelineView(.periodic(from: renderNow, by: 30)) { ctx in
+                        let ageSec = max(0, ctx.date.timeIntervalSince(snap.fetchedAt))
+                        Text(fmtQuotaAge(snap.fetchedAt, at: ctx.date, zh: zh))
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(ageSec > 600 ? Color(red: 0.96, green: 0.62, blue: 0.14) : Color.white.opacity(0.45))
+                    }
                 }
 
                 Spacer()
@@ -1043,14 +1026,14 @@ struct DynamicNotchRootView: View {
                 if sideBySideGroups && snap.groups.count >= 2 {
                     HStack(alignment: .top, spacing: 8) {
                         ForEach(snap.groups.prefix(2)) { g in
-                            quotaGroupBox(group: g, isActive: g.family == activeFam && activeFam != .unknown, now: now)
+                            quotaGroupBox(group: g, isActive: g.family == activeFam && activeFam != .unknown, now: renderNow)
                                 .frame(maxWidth: .infinity)
                         }
                     }
                 } else {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(snap.groups.prefix(2)) { g in
-                            quotaGroupBox(group: g, isActive: g.family == activeFam && activeFam != .unknown, now: now)
+                            quotaGroupBox(group: g, isActive: g.family == activeFam && activeFam != .unknown, now: renderNow)
                         }
                     }
                 }
@@ -1134,11 +1117,14 @@ struct DynamicNotchRootView: View {
                 .monospacedDigit()
                 .frame(width: 34, alignment: .trailing)
 
-            Text(fmtCountdownDetail(bucket.resetDate, isWeekly: isWeekly, at: now, zh: zh))
-                .font(.system(size: 9.5, weight: .medium, design: .rounded))
-                .foregroundStyle(Color.white.opacity(0.46))
-                .monospacedDigit()
-                .frame(width: 54, alignment: .trailing)
+            // Leaf-only countdown ticker: 1s for 5h bucket, 60s for 7d bucket — zero card-wide rebuilds!
+            TimelineView(.periodic(from: now, by: isWeekly ? 60 : 1)) { ctx in
+                Text(fmtCountdownDetail(bucket.resetDate, isWeekly: isWeekly, at: ctx.date, zh: zh))
+                    .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.46))
+                    .monospacedDigit()
+                    .frame(width: 54, alignment: .trailing)
+            }
         }
     }
 
@@ -1147,10 +1133,9 @@ struct DynamicNotchRootView: View {
         HStack(spacing: 8) {
             switch vm.quotaState {
             case .loading:
-                ProgressView().controlSize(.small)
                 Text(zh ? "正在查询官方 agy /usage 实时额度（首次约 8 秒，零 Token）…" : "Querying official agy /usage (~8s, zero tokens)…")
                     .font(.system(size: 11))
-                    .foregroundStyle(Color.white.opacity(0.55))
+                    .foregroundStyle(Color(red: 0.22, green: 0.74, blue: 0.97).opacity(0.85))
             case .cliMissing:
                 Text(zh ? "未找到 agy CLI（需安装 ~/.local/bin/agy 并登录）" : "agy CLI not found (~/.local/bin/agy required)")
                     .font(.system(size: 11))

@@ -150,7 +150,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var relativeInsetRight: CGFloat = 16
     private var relativeInsetBottom: CGFloat = 14
     private var lastAgyWindowRect: NSRect? = nil
+    private var trackedAgyWindowID: CGWindowID? = nil
+    private var trackedAgyPID: pid_t? = nil
     private var windowTrackTimer: Timer?
+    private var windowTrackInterval: TimeInterval = 0
+    private var fastTrackUntil: Date = .distantPast
+    private var dragActivityMonitor: Any?
     private var isUserDragging = false
     private var dragCooldownUntil: Date = .distantPast
     private var openedByHover = false
@@ -203,45 +208,114 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             object: nil
         )
 
-        vm.startPolling()
-        startAgyWindowTracking()
+        vm.startQuotaScheduler()
+        // Single idempotent entry point: only starts polling / window tracking if AGY is actually active!
+        applyAgyFrontState()
     }
 
-    /// Reads the frontmost on-screen Antigravity main window bounds in AppKit screen coordinates.
-    /// Uses public CoreGraphics window bounds (zero Accessibility prompt, zero injection).
+    func applicationWillTerminate(_ notification: Notification) {
+        hoverEnterWork?.cancel()
+        hoverExitWork?.cancel()
+        collapseFrameWork?.cancel()
+        stopHoverExitWatchdog()
+        stopAgyWindowTracking()
+        removeDismissMonitors()
+        vm.pausePolling()
+    }
+
+    /// O(1) single-window lookup when `trackedAgyWindowID` is cached; falls back to PID-matched
+    /// window scan only when window ID is unknown or disappeared. Eliminates 4Hz full-machine scans!
     private func findAntigravityWindowRect() -> NSRect? {
-        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
-            return nil
-        }
         let primaryHeight = NSScreen.screens.first?.frame.height ?? vm.geometry.screenFrame.height
-        for info in list {
-            let owner = (info[kCGWindowOwnerName as String] as? String) ?? ""
-            let layer = (info[kCGWindowLayer as String] as? Int) ?? -1
-            guard layer == 0, owner.lowercased().contains("antigravity") else { continue }
+
+        func parseBounds(_ info: [String: Any]) -> NSRect? {
             guard let boundsDict = info[kCGWindowBounds as String] as? [String: Any],
                   let cgRect = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
-                  cgRect.width >= 360, cgRect.height >= 240 else { continue }
-            // Convert Quartz top-left global coords -> AppKit bottom-left global coords
+                  cgRect.width >= 360, cgRect.height >= 240 else { return nil }
             let appKitY = primaryHeight - (cgRect.origin.y + cgRect.size.height)
             return NSRect(x: cgRect.origin.x, y: appKitY, width: cgRect.size.width, height: cgRect.size.height)
         }
+
+        // Fast path: O(1) WindowServer query for the exact cached CGWindowID
+        if let wid = trackedAgyWindowID,
+           let single = CGWindowListCopyWindowInfo([.optionIncludingWindow], wid) as? [[String: Any]],
+           let info = single.first,
+           (info[kCGWindowIsOnscreen as String] as? Bool) != false,
+           let rect = parseBounds(info) {
+            return rect
+        }
+
+        // Fallback: full on-screen list matched by integer PID first, owner string second
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+            trackedAgyWindowID = nil
+            return nil
+        }
+
+        let front = NSWorkspace.shared.frontmostApplication
+        let frontBid = front?.bundleIdentifier?.lowercased() ?? ""
+        let frontName = front?.localizedName?.lowercased() ?? ""
+        if frontBid.contains("antigravity") || frontName.contains("antigravity") {
+            trackedAgyPID = front?.processIdentifier
+        }
+
+        for info in list {
+            let layer = (info[kCGWindowLayer as String] as? Int) ?? -1
+            guard layer == 0 else { continue }
+            let pid = (info[kCGWindowOwnerPID as String] as? pid_t) ?? -1
+            let matchedByPID = (trackedAgyPID != nil && pid == trackedAgyPID)
+            if !matchedByPID {
+                let owner = (info[kCGWindowOwnerName as String] as? String) ?? ""
+                guard owner.lowercased().contains("antigravity") else { continue }
+                trackedAgyPID = pid
+            }
+            if let rect = parseBounds(info) {
+                if let num = info[kCGWindowNumber as String] as? UInt32 {
+                    trackedAgyWindowID = CGWindowID(num)
+                }
+                return rect
+            }
+        }
+        trackedAgyWindowID = nil
         return nil
     }
 
-    private func startAgyWindowTracking() {
-        guard windowTrackTimer == nil else { return }
-        let t = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+    private func startAgyWindowTracking(fast: Bool = false) {
+        let desired: TimeInterval = fast ? 0.16 : 1.5
+        if windowTrackTimer != nil && abs(windowTrackInterval - desired) < 0.01 { return }
+        windowTrackTimer?.invalidate()
+        windowTrackInterval = desired
+        let t = Timer(timeInterval: desired, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.trackAntigravityWindowTick()
             }
         }
-        t.tolerance = 0.08
+        t.tolerance = fast ? 0.04 : 0.35
+        RunLoop.main.add(t, forMode: .common)
         windowTrackTimer = t
+        installDragActivityMonitorIfNeeded()
     }
 
     private func stopAgyWindowTracking() {
         windowTrackTimer?.invalidate()
         windowTrackTimer = nil
+        windowTrackInterval = 0
+        if let m = dragActivityMonitor {
+            NSEvent.removeMonitor(m)
+            dragActivityMonitor = nil
+        }
+    }
+
+    /// Passive global drag/release detector: boosts O(1) window tracking to 6Hz ONLY while user
+    /// is actually dragging a window, then drops straight back to calm 1.5s resting cadence!
+    private func installDragActivityMonitorIfNeeded() {
+        guard dragActivityMonitor == nil else { return }
+        dragActivityMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDragged, .leftMouseUp]) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.vm.placement == .bottomRight, !self.isUserDragging, self.vm.notchState == .collapsed else { return }
+                self.fastTrackUntil = Date().addingTimeInterval(0.9)
+                self.startAgyWindowTracking(fast: true)
+            }
+        }
     }
 
     private func isAntigravityOrSelfFrontmost() -> Bool {
@@ -256,14 +330,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func trackAntigravityWindowTick() {
         guard vm.placement == .bottomRight, !isUserDragging, vm.notchState == .collapsed else { return }
         if vm.onlyWhenAgyActive && !isAntigravityOrSelfFrontmost() {
-            stopAgyWindowTracking()
-            setPanelVisible(false)
+            applyAgyFrontState()
             return
         }
         guard let agyRect = findAntigravityWindowRect() else {
             if lastAgyWindowRect != nil {
                 lastAgyWindowRect = nil
-                updateNotchVisibility()
+                applyAgyFrontState()
             }
             return
         }
@@ -276,13 +349,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         if changed {
             lastAgyWindowRect = agyRect
+            fastTrackUntil = Date().addingTimeInterval(0.9)
             floatingAnchorOrigin = computeAnchoredOrigin(for: agyRect)
             updateFloatingExpansionDirection()
             applyHostingAnchors()
             syncPanelFrame(animated: false)
+        } else if windowTrackInterval < 0.5 && Date() >= fastTrackUntil && NSEvent.pressedMouseButtons == 0 {
+            // Drop back to ultra-low-energy 1.5s cadence as soon as window stops moving!
+            startAgyWindowTracking(fast: false)
         }
         if !notchPanel.isVisible {
-            updateNotchVisibility()
+            applyAgyFrontState()
         }
     }
 
@@ -438,8 +515,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self.applyHostingAnchors()
         }
 
-        notchPanel.orderFrontRegardless()
-        updateNotchVisibility()
+        // Visibility & polling managed centrally by applyAgyFrontState() after setup completes
     }
 
     private func updateFloatingExpansionDirection() {
@@ -496,6 +572,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         applyHostingAnchors()
         configureWindowStyleForPlacement()
+        applyAgyFrontState()
 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -564,7 +641,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func startHoverExitWatchdog() {
         stopHoverExitWatchdog()
         outsideTickCount = 0
-        hoverWatchdogTimer = Timer.scheduledTimer(withTimeInterval: 0.22, repeats: true) { [weak self] _ in
+        let t = Timer(timeInterval: 0.22, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 guard self.vm.notchState == .expanded, self.openedByHover else {
@@ -586,6 +663,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
             }
         }
+        t.tolerance = 0.06
+        RunLoop.main.add(t, forMode: .common)
+        hoverWatchdogTimer = t
     }
 
     private func stopHoverExitWatchdog() {
@@ -598,12 +678,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hoverEnterWork?.cancel()
         hoverExitWork?.cancel()
         collapseFrameWork?.cancel()
+        stopAgyWindowTracking()
 
         openedByHover = triggeredByHover
         vm.isHoveringCollapsed = false
         vm.showSessionPicker = false
-        vm.refreshNow()
-        vm.refreshQuota(force: false, maxAge: 90)
+        vm.refreshNow(forceRouteProbe: true)
+        vm.refreshQuota(force: false, maxAge: 180)
         NSCursor.arrow.set()
 
         notchPanel.ignoresMouseEvents = false
@@ -614,25 +695,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             notchPanel.level = .popUpMenu
         }
 
+        // Set state first without triggering a clipped frame, measure synchronously, then apply frame & present cleanly
         applyHostingAnchors()
-        withAnimation(.spring(response: 0.30, dampingFraction: 0.87)) {
-            vm.notchState = .expanded
+        vm.notchState = .expanded
+        syncPanelFrame(animated: false)
+        if !triggeredByHover {
+            NSApp.activate(ignoringOtherApps: true)
+            notchPanel.makeKeyAndOrderFront(nil)
+            stopHoverExitWatchdog()
+        } else {
+            notchPanel.orderFrontRegardless()
+            startHoverExitWatchdog()
         }
-
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.vm.notchState == .expanded else { return }
-            self.syncPanelFrame(animated: false)
-            if !triggeredByHover {
-                NSApp.activate(ignoringOtherApps: true)
-                self.notchPanel.makeKeyAndOrderFront(nil)
-                self.stopHoverExitWatchdog()
-            } else {
-                self.notchPanel.orderFrontRegardless()
-                self.startHoverExitWatchdog()
-            }
-            self.notchPanel.invalidateShadow()
-            self.installDismissMonitors()
-        }
+        installDismissMonitors()
     }
 
     private func collapseToIsland() {
@@ -723,12 +798,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func syncPanelFrame(animated: Bool) {
         let frame = targetFrame(for: vm.notchState)
-        if abs(notchPanel.frame.width - frame.width) > 0.5
+        let sizeChanged = abs(notchPanel.frame.width - frame.width) > 0.5
             || abs(notchPanel.frame.height - frame.height) > 0.5
-            || abs(notchPanel.frame.origin.x - frame.origin.x) > 0.5
-            || abs(notchPanel.frame.origin.y - frame.origin.y) > 0.5 {
+        let posChanged = abs(notchPanel.frame.origin.x - frame.origin.x) > 0.5
+            || abs(notchPanel.frame.origin.y - frame.origin.y) > 0.5
+        if sizeChanged || posChanged {
             notchPanel.setFrame(frame, display: true, animate: animated)
-            notchPanel.invalidateShadow()
+            // Only invalidate WindowServer hardware shadow when window SIZE actually changed!
+            if sizeChanged {
+                notchPanel.invalidateShadow()
+            }
         }
     }
 
@@ -778,11 +857,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func systemDidWake() {
-        vm.refreshNow()
-        vm.refreshQuota(force: false, maxAge: 60)
+        trackedAgyWindowID = nil
+        applyAgyFrontState()
+        // Wait 4s after wake for Wi-Fi/network stack to reconnect before querying quota
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
+            guard let self, self.isAntigravityOrSelfFrontmost() || self.vm.notchState == .expanded else { return }
+            self.vm.refreshQuota(force: false, maxAge: 180)
+        }
     }
 
     @objc private func screensChanged() {
+        trackedAgyWindowID = nil
         vm.geometry = NotchGeometry.detect(preferNotch: vm.placement == .topNotch)
         if vm.placement == .bottomRight {
             floatingAnchorOrigin = loadFloatingOrigin(geo: vm.geometry)
@@ -793,11 +878,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func activeAppChanged() {
+        trackedAgyWindowID = nil
         let front = NSWorkspace.shared.frontmostApplication
         if vm.notchState == .expanded && front?.processIdentifier != ProcessInfo.processInfo.processIdentifier {
             collapseToIsland()
         }
-        updateNotchVisibility()
+        applyAgyFrontState()
+    }
+
+    private func updateNotchVisibility() {
+        applyAgyFrontState()
     }
 
     private func setPanelVisible(_ visible: Bool) {
@@ -812,7 +902,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func updateNotchVisibility() {
+    /// Single idempotent lifecycle gate for visibility, SQLite polling, and window tracking.
+    private func applyAgyFrontState() {
         guard notchPanel != nil else { return }
         if !vm.showNotchIsland && vm.notchState != .expanded {
             setPanelVisible(false)
@@ -823,20 +914,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if !vm.onlyWhenAgyActive || vm.notchState == .expanded {
             setPanelVisible(true)
             vm.resumePolling()
-            if vm.placement == .bottomRight { startAgyWindowTracking() }
+            if vm.placement == .bottomRight && vm.notchState == .collapsed {
+                startAgyWindowTracking(fast: false)
+            } else {
+                stopAgyWindowTracking()
+            }
             return
         }
         let isAgy = isAntigravityOrSelfFrontmost()
         if isAgy {
-            let hasAgyWindow = (vm.placement == .topNotch) || (lastAgyWindowRect != nil) || (findAntigravityWindowRect() != nil)
+            let agyRect = (vm.placement == .bottomRight) ? findAntigravityWindowRect() : nil
+            if let agyRect {
+                lastAgyWindowRect = agyRect
+                floatingAnchorOrigin = computeAnchoredOrigin(for: agyRect)
+                updateFloatingExpansionDirection()
+                applyHostingAnchors()
+                syncPanelFrame(animated: false)
+            }
+            let hasAgyWindow = (vm.placement == .topNotch) || (agyRect != nil)
             setPanelVisible(hasAgyWindow)
-            vm.resumePolling()
-            vm.refreshNow()
-            if vm.placement == .bottomRight {
-                startAgyWindowTracking()
-                trackAntigravityWindowTick()
+            if hasAgyWindow {
+                vm.resumePolling()
+                vm.refreshNow(forceRouteProbe: true)
+                if vm.placement == .bottomRight {
+                    startAgyWindowTracking(fast: false)
+                } else {
+                    stopAgyWindowTracking()
+                }
             } else {
                 stopAgyWindowTracking()
+                vm.pausePolling()
             }
         } else {
             setPanelVisible(false)
