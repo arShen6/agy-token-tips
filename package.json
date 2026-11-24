@@ -1,6 +1,6 @@
 {
   "name": "agy-token-tips",
-  "version": "0.2.5",
+  "version": "0.3.0",
   "description": "Token usage, context fill, generation speed and first-token wait inside Antigravity Desktop",
   "type": "module",
   "license": "MIT",

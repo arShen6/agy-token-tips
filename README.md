@@ -2,51 +2,78 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Open Antigravity Desktop with **AGY Token Tips** to see token usage, context fill, generation speed and first-token wait beside the message box.
+Real-time **token speed (`tok/s`), TTFT wait, context window fill, cache hit rate, Swarm subagent rollup, and official 7d / 5h remaining quota** for **Antigravity Desktop** — now powered by a standalone native macOS Obsidian HUD (**zero launcher, zero DOM injection, zero Antigravity restart**).
 
-## macOS · Apple Silicon
+---
 
-**[Download the Mac launcher (.zip)](https://github.com/arShen6/agy-token-tips/raw/refs/heads/main/downloads/AGY-Token-Tips-macos-arm64.zip)**
+## macOS Native HUD · Apple Silicon (Recommended — v0.3.0)
 
-1. **First time using token tips?** With Antigravity Desktop installed, download the metrics helper with [English tooltips](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-macos-arm64-en.zip) or [Chinese tooltips](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-macos-arm64-zh-CN.zip). Extract the folder and double-click `install.command` once. If you already installed the helper, skip this step.
-2. Unzip the **Mac launcher** linked above, move `AGY-Token-Tips.app` to Applications and add it to your Dock.
-3. **From now on, click AGY Token Tips to open Antigravity.** Send a message. The metrics appear beside the message box after the first model call finishes.
+**[Download TokenLensHUD.app (.zip)](https://github.com/arShen6/agy-token-tips/raw/refs/heads/main/downloads/TokenLensHUD-macos-arm64.zip)** · [All Releases](https://github.com/arShen6/agy-token-tips/releases)
 
-If Antigravity is already open and the launcher asks to reopen it, save your work before choosing **Quit and reopen**.
+> Works natively on **macOS 14 Sonoma / 15 Sequoia / 26 Tahoe** (Apple Silicon). No custom Antigravity launcher, no Node.js runtime, no LaunchAgent daemon, no CDP injection, and survives Antigravity client updates.
 
-## Windows and Linux · x64 (experimental)
+### Quick Start (30 seconds)
 
-With Antigravity Desktop installed, extract the ZIP for your platform and run the installer once. Save your work and quit Antigravity before using the launcher for the first time. Use the launcher again after a full exit. All helper downloads include Node.js.
+1. **Download & Unzip** [`TokenLensHUD-macos-arm64.zip`](https://github.com/arShen6/agy-token-tips/raw/refs/heads/main/downloads/TokenLensHUD-macos-arm64.zip) and drag **`TokenLensHUD.app`** into `/Applications`.
+2. **Open `TokenLensHUD.app`**:
+   - Because this community build is ad-hoc signed (not Apple notarized), macOS Gatekeeper may show a warning on first launch. Unlock it in either way:
+     - **GUI**: Right-click `TokenLensHUD.app` → **Open** (or go to **System Settings → Privacy & Security → Open Anyway**).
+     - **Terminal (fastest)**:
+       ```bash
+       xattr -cr /Applications/TokenLensHUD.app && open /Applications/TokenLensHUD.app
+       ```
+3. **Use Antigravity as usual** (no restart needed!):
+   - A minimal obsidian micro-island (`◯ 20% · 112 t/s`) automatically attaches to the **bottom-right corner of your Antigravity window** and follows it across moves, resizes, and monitors (auto-hides when switching to other apps).
+   - **Hover** over the micro-island (~240ms) to smoothly expand the full zero-scroll **Obsidian Command Center**; move your cursor away (~300ms) or click outside / press `Esc` to collapse.
+   - **Drag** the micro-island to fine-tune its offset relative to Antigravity's bottom-right corner; **right-click** the micro-island (or menu bar gauge icon) to toggle **MacBook Top Physical Notch Island**, switch to **click-only expand**, reset corner position, or **Quit**.
+4. *(Optional)* **Auto-start at login**: Add `TokenLensHUD.app` in **System Settings → General → Login Items**.
+5. *(Optional)* **Official 7d / 5h Quota**: If `agy` CLI (`~/.local/bin/agy` or Homebrew `agy`) is installed and signed in, the HUD automatically queries official `agy -p /usage` asynchronously in the background (**0 turns, 0 tokens consumed**) and displays **Gemini** and **Claude / GPT** remaining `7d` (top) and `5h` (bottom) quotas with live countdown timers.
+
+### Build Locally from Source (Zero Gatekeeper Prompt)
+
+Requires only Xcode Command Line Tools (`xcode-select --install`):
+
+```bash
+git clone https://github.com/arShen6/agy-token-tips.git
+cd agy-token-tips
+bash macos-hud/build.sh
+open macos-hud/dist/TokenLensHUD.app
+```
+
+### What You See in the Native HUD
+
+| Area | Details |
+| --- | --- |
+| **Micro-Island (Resting)** | Context fill ring + `%` · live generating pulse · latest speed (`t/s`). Pure obsidian finish (`146 × 32pt`) anchored to Antigravity's bottom-right corner (or MacBook top notch). |
+| **Official Model Quota** | **Gemini Models** & **Claude / GPT** remaining **`7d`** (top) and **`5h`** (bottom) progress bars + live second-by-second reset countdowns, auto-highlighting the active conversation's model family. |
+| **4-Column KPIs** | Streaming / End-to-end `tok/s`, TTFT / Hold wait, latest output (`Thinking` + `Response`), cumulative cache hit rate. |
+| **Unified Context Window** | Segmented bar showing conversation + system prompt anatomy (Skills, Subagents, User Rules, MCP, Core), 75% warning / 90% critical markers, estimated calls runway before `/compact`, and cache-drop alerts. |
+| **Session & Swarm Sync** | Automatic active-conversation sync + inline switcher + Swarm / Subagent token rollup + latest 5 calls table. |
+
+---
+
+## Legacy Composer-Bar Mode · Windows / Linux x64 (Experimental) & Old macOS Launcher
+
+If you are on **Windows / Linux**, or specifically prefer the older Electron composer-footer bar launched via CDP debugging port, the legacy installers remain available:
+
+- **macOS legacy launcher**: [AGY-Token-Tips-macos-arm64.zip](https://github.com/arShen6/agy-token-tips/raw/refs/heads/main/downloads/AGY-Token-Tips-macos-arm64.zip) + helper ([English](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-macos-arm64-en.zip) · [Chinese](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-macos-arm64-zh-CN.zip))
 
 | Platform | Download helper | Install once | Open Antigravity |
 | --- | --- | --- | --- |
-| Windows | [English](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-windows-x64-en.zip) · [Chinese](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-windows-x64-zh-CN.zip) | Double-click `install.cmd` | Double-click `start-antigravity.cmd` |
-| Linux | [English](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-linux-x64-en.zip) · [Chinese](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-linux-x64-zh-CN.zip) | Run `bash install.sh` | Run `bash start-antigravity.sh` |
+| Windows x64 | [English](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-windows-x64-en.zip) · [Chinese](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-windows-x64-zh-CN.zip) | Double-click `install.cmd` | Double-click `start-antigravity.cmd` |
+| Linux x64 | [English](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-linux-x64-en.zip) · [Chinese](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-linux-x64-zh-CN.zip) | Run `bash install.sh` | Run `bash start-antigravity.sh` |
 
-Run these scripts from the extracted folder as your normal user. Windows requires Task Scheduler and Windows PowerShell. Linux requires a desktop session with user systemd. Both packages have automated checks. Live Antigravity UI compatibility still needs confirmation. [Report an issue](https://github.com/arShen6/agy-token-tips/issues/new?template=bug_report.md).
+![Legacy composer-bar preview](assets/agy-preview.png)
 
-![agy-token-tips showing speed, wait time, context usage and detailed statistics in Antigravity](assets/agy-preview.png)
+<details>
+<summary>Manage legacy helper, technical architecture & development</summary>
 
-*Preview from an earlier build. Current details explicitly distinguish streaming and end-to-end speed.*
+### Privacy & Architecture (Native macOS HUD)
+- **Strictly read-only SQLite**: Reads `~/.gemini/antigravity/conversations/<uuid>.db` (`gen_metadata`) and `conversation_summaries.db` with `SQLITE_OPEN_READONLY` + `PRAGMA query_only = ON`, stat-cached and closed immediately after each read (<2ms).
+- **Window attachment**: Uses public CoreGraphics window bounds (`CGWindowListCopyWindowInfo`) — no Accessibility permission required, no process injection, no app bundle modification.
+- **Official Quota**: Runs `agy --output-format json -p /usage` asynchronously (single-flight, 20s timeout, cached in `~/Library/Application Support/TokenLensHUD/quota-cache.json`). Zero tokens consumed; no credentials scraped or uploaded.
 
-## What you see
-
-A compact bar beside your composer. Hover for the details — no separate dashboard to open.
-
-| Metric | What it shows |
-| --- | --- |
-| **Ctx** | Context tokens used / limit, plus percentage |
-| **tok/s** | Output speed of the latest model call |
-| **TTFT / Hold** | First-token wait / wait for buffered output |
-| **Out** | Output tokens in the latest call |
-| **Hover details** | Reasoning and response/tool output, session totals |
-| **Cache** | Cached input and cache hit rate |
-
-Context usage turns **yellow at 75%** and **red at 90%**. The strip stays in English; tooltips are available in English or Chinese. Data may update after a model call completes.
-
-## Manage the helper
-
-The helper starts automatically at login. Use the scripts in the extracted installer folder to change the tooltip language, check status or uninstall.
+### Manage Legacy Helper
 
 | Action | macOS | Windows | Linux |
 | --- | --- | --- | --- |
@@ -55,24 +82,7 @@ The helper starts automatically at login. Use the scripts in the extracted insta
 | Check status | `status.command` | `status.cmd` | `status.sh` |
 | Uninstall | `uninstall.command` | `uninstall.cmd` | `uninstall.sh` |
 
-These community installers are unsigned. Your OS or file manager may ask you to confirm opening them. Windows ARM, Linux ARM and Intel Mac standalone packages are not included in this release.
-
-## Understand the numbers
-
-**Streaming speed** excludes the initial wait. **End-to-end speed** includes it. Both are labeled separately in the tooltip, which repeats the same speed shown in the bar. Potentially buffered output uses end-to-end speed and the `Hold` label.
-
-Counts come from local usage metadata. Unknown values stay `—`; tokens are not guessed from text length. These are conversation metrics, not billing or remaining account quota.
-
-<details>
-<summary>Technical details, troubleshooting and development</summary>
-
-This is an unofficial local UI patch, not a VSIX extension. It reads local `gen_metadata` records and uses a loopback debugging connection to mount the strip. No API key or chat/metrics uploads. No application bundle modification.
-
-macOS retains `~/Library/Application Support/AGY Metrics` and its LaunchAgent identity for upgrade compatibility. Windows installs under `%LOCALAPPDATA%/agy-token-tips`; Linux uses `$XDG_DATA_HOME/agy-token-tips` (normally `~/.local/share/agy-token-tips`). It installs an independent copy, so the downloaded folder can be moved afterward. Uninstall removes login startup and the service; logs and backups remain, and Antigravity conversations are untouched.
-
-If metrics are missing, finish a model call and run the status script for your platform. `ready: true` means the widget was detected in an actual window. Logs are in the installation directory’s `logs` folder. Linux service diagnostics: `journalctl --user -u agy-token-tips.service -n 50`. Client updates may require adjustments to the private data format or UI hooks. Report your app/OS versions and redacted errors; do not upload conversation databases.
-
-Source development requires Node.js >=22.16:
+### Legacy Node.js Source Development (Node.js >=22.16)
 
 ```bash
 bash start.sh start --language en
@@ -81,12 +91,12 @@ npm test
 npm run demo
 ```
 
-The demo uses simulated data. Windows/Linux packages are experimental: automated tests and native runtime/launcher checks do not establish live UI compatibility. More details: [protocol.md](docs/protocol.md).
+More protocol notes: [docs/protocol.md](docs/protocol.md).
 
 </details>
 
 ## Contribute
 
-Issues and pull requests are welcome — compatibility fixes, translations and installation improvements. See [CONTRIBUTING.md](CONTRIBUTING.md). Proposals for other clients need verified data sources and live-client evidence.
+Issues and pull requests are welcome — compatibility fixes, translations, and platform support. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-Inspired by [chuanban-antigravity-theme-patch](https://github.com/Anarcadia/chuanban-antigravity-theme-patch). Independently implemented; no code or theme assets from that project are bundled. [MIT License](LICENSE). Unofficial, not affiliated with Google. Node.js retains its own license in `runtime/LICENSE`.
+Inspired by [chuanban-antigravity-theme-patch](https://github.com/Anarcadia/chuanban-antigravity-theme-patch). Independently implemented. [MIT License](LICENSE). Unofficial, not affiliated with Google.

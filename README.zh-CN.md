@@ -2,51 +2,79 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-用 **AGY Token Tips** 启动 Antigravity Desktop，就能在对话输入框旁看到 token 用量、上下文占用、生成速度和首字等待时间。
+为 **Antigravity Desktop** 打造的原生态实时监控助手：随时掌握 **输出速度（`tok/s`）、首字等待（TTFT）、上下文占比、缓存命中率、Swarm 子代理合并消耗、以及官方 7 天 / 5 小时剩余额度**。
 
-## macOS · Apple 芯片（M 系列）
+现已全面升级为 **原生 macOS 黑曜石悬浮微岛（`TokenLensHUD.app`）**——**无需专用启动器、无需后台守护脚本、无需 Node.js、无需 CDP 注入、不重启 Antigravity、客户端升级也不失效**。
 
-**[下载 Mac 启动器（ZIP）](https://github.com/arShen6/agy-token-tips/raw/refs/heads/main/downloads/AGY-Token-Tips-macos-arm64.zip)**
+---
 
-1. **首次使用用量栏**，先装好 Antigravity Desktop，再下载后台服务（[中文提示版](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-macos-arm64-zh-CN.zip) / [英文提示版](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-macos-arm64-en.zip)）。完整解压，双击一次 `install.command`。已经装过后台服务的用户直接从第 2 步开始。
-2. 解压上方的 **Mac 启动器**，把 `AGY-Token-Tips.app` 移到“应用程序”，再拖到 Dock。
-3. **以后点 Dock 里的 AGY Token Tips 图标启动 Antigravity。** 打开对话发一条消息，首次模型调用完成后，输入框旁就会显示用量。
+## macOS 原生黑曜石微岛 · Apple 芯片（推荐 — v0.3.0）
 
-如果 Antigravity 已经打开，启动器提示需要重开，请先保存工作，再点“已保存，重新打开”。
+**[点击直接下载 TokenLensHUD.app（ZIP，约 500 KB）](https://github.com/arShen6/agy-token-tips/raw/refs/heads/main/downloads/TokenLensHUD-macos-arm64.zip)** · [查看全部 Releases](https://github.com/arShen6/agy-token-tips/releases)
 
-## Windows 和 Linux · x64（实验版）
+> 原生 Swift 编写，支持 **macOS 14 Sonoma / 15 Sequoia / 26 Tahoe**（M1 / M2 / M3 / M4 等 Apple 芯片）。开箱即用，与 Antigravity 宿主完全解耦。
 
-先装好 Antigravity Desktop，下载下表对应的压缩包，完整解压后运行一次安装脚本。首次通过启动脚本打开 Antigravity 前，请先保存工作并退出客户端。以后每次完全退出后，用同一个启动脚本打开即可。安装包已内置 Node.js。
+### 30 秒上手
+
+1. **下载并解压** 上方的 [`TokenLensHUD-macos-arm64.zip`](https://github.com/arShen6/agy-token-tips/raw/refs/heads/main/downloads/TokenLensHUD-macos-arm64.zip)，把 **`TokenLensHUD.app`** 拖入「应用程序（`/Applications`）」。
+2. **首次打开授权**（开源个人打包未经 Apple 付费公证，首次打开系统会拦截提示，任选其一放行即可）：
+   - **图形界面**：右键点击 `TokenLensHUD.app` → **打开**（或在「系统设置 → 隐私与安全性」底部点 **仍要打开**）。
+   - **终端一行放行（最快）**：
+     ```bash
+     xattr -cr /Applications/TokenLensHUD.app && open /Applications/TokenLensHUD.app
+     ```
+3. **正常打开或继续使用 Antigravity（无需重启）**：
+   - **极简黑曜石微岛（`146 × 32pt`）** 会自动吸附在 **Antigravity 客户端窗口的右下角**，静息时只露 `◯ 上下文% · 速度 t/s`，AGY 拖动/缩放/移到副屏都会自动紧跟，切去其他软件时自动隐身不挡屏。
+   - **鼠标悬停约 0.24 秒**直接一步展开零滚动 **652pt 暗曜总控台**，移开鼠标约 0.3 秒自动丝滑收起（点外部或按 `Esc` 也会立即收起）。
+   - **自定义与防误触**：按住微岛可微调相对 AGY 右下角的偏移并自动记忆；**右键微岛**（或右键顶部状态栏的仪表盘图标）可随时一键切换为 **MacBook 物理顶刘海灵动岛**、关闭悬停改为纯点击展开、重置位置，或**退出程序**（详情面板内不放退出按钮，彻底杜绝手滑误退）。
+4. *（可选）* **开机自启**：在「系统设置 → 通用 → 登录项与扩展」中把 `TokenLensHUD.app` 加入登录时打开即可。
+5. *（可选）* **开启官方 7 天 / 5 小时剩余额度**：本机装有并登录了官方 `agy` CLI（`~/.local/bin/agy` 或 Homebrew `agy`）时，会自动在后台异步调用 `agy -p /usage`（**0 轮对话、0 Token 消耗**），在面板顶部实时展示 **Gemini** 与 **Claude / GPT** 两组模型的 **`7天`（上）与 `5h`（下）剩余额度及每秒跳动倒计时**；未安装 `agy` 时其余会话指标照常可用。
+
+### 开发者本地一行编译（零 Gatekeeper 弹窗）
+
+只需 macOS 自带的 Xcode 命令行工具（`xcode-select --install`）：
+
+```bash
+git clone https://github.com/arShen6/agy-token-tips.git
+cd agy-token-tips
+bash macos-hud/build.sh
+open macos-hud/dist/TokenLensHUD.app
+```
+
+### 你能看到什么
+
+| 模块 | 展示内容 |
+| --- | --- |
+| **极简微岛（静息态）** | 上下文进度环 + `%` · 生成中蓝色呼吸点 · 实时速度 `t/s`。默认吸附 AGY 右下角，可一键切至 MacBook 顶部物理刘海。 |
+| **官方模型额度（剩余）** | **Gemini 模型组**与 **Claude / GPT 组**的 **`7天`（在上）与 `5h`（在下）** 剩余进度条与重置倒计时，自动高亮当前会话所属模型组，与 AGY 原生顺序一致。 |
+| **4 列核心 KPI** | 流式 / 端到端速度 `tok/s`、首字等待 `TTFT` / 缓冲等待 `Hold`、本次输出（思考/回复拆分）、累计缓存命中率。 |
+| **上下文窗口与构成合一** | 分段展示对话历史与系统提示词开销（Skills / 子代理 / 用户规则 / MCP / 系统核心），含 75% 橙色 / 90% 红色警戒线、剩余可聊轮数估算与缓存突降提醒。 |
+| **会话同步与子代理树** | 自动跟随当前 Antigravity 活跃会话 + 内置无焦冲突会话切换器 + Swarm / 子代理合并 Token 树 + 最近 5 次调用明细。 |
+
+---
+
+## 旧版输入框嵌入模式 · Windows / Linux x64（实验版）与旧 macOS 启动器
+
+如果你使用 **Windows / Linux**，或者偏好早期通过本机 CDP 端口将数字条直接塞进输入框旁的方案，仍可使用原有版本：
+
+- **旧版 macOS 启动器**：[AGY-Token-Tips-macos-arm64.zip](https://github.com/arShen6/agy-token-tips/raw/refs/heads/main/downloads/AGY-Token-Tips-macos-arm64.zip) + 后台服务（[中文版](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-macos-arm64-zh-CN.zip) · [英文版](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-macos-arm64-en.zip)）
 
 | 平台 | 下载后台服务 | 首次安装 | 日常启动 Antigravity |
 | --- | --- | --- | --- |
-| Windows | [中文提示版](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-windows-x64-zh-CN.zip) · [英文提示版](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-windows-x64-en.zip) | 双击 `install.cmd` | 双击 `start-antigravity.cmd` |
-| Linux | [中文提示版](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-linux-x64-zh-CN.zip) · [英文提示版](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-linux-x64-en.zip) | 运行 `bash install.sh` | 运行 `bash start-antigravity.sh` |
+| Windows x64 | [中文版](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-windows-x64-zh-CN.zip) · [英文版](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-windows-x64-en.zip) | 双击 `install.cmd` | 双击 `start-antigravity.cmd` |
+| Linux x64 | [中文版](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-linux-x64-zh-CN.zip) · [英文版](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-linux-x64-en.zip) | 运行 `bash install.sh` | 运行 `bash start-antigravity.sh` |
 
-请用普通用户在解压目录中运行脚本。Windows 需要任务计划程序及 Windows PowerShell，Linux 需要带用户级 systemd 的桌面会话。两个平台均已做基础自动化检查，客户端界面仍待实机验证。[反馈兼容性问题](https://github.com/arShen6/agy-token-tips/issues/new?template=bug_report.md)。
+![旧版输入框嵌入样式预览](assets/agy-preview.png)
 
-![agy-token-tips 在 Antigravity 中显示速度、等待时间、上下文用量和详细统计](assets/agy-preview.png)
+<details>
+<summary>技术原理、隐私说明与旧版脚本管理</summary>
 
-*早期版本实机示例；当前详情已明确区分流式速度与端到端速度。*
+### 原生 macOS HUD 技术与隐私说明
+- **严格只读 SQLite**：仅以 `SQLITE_OPEN_READONLY` + `PRAGMA query_only = ON` 按文件变更缓存只读 `~/.gemini/antigravity/conversations/<uuid>.db`（`gen_metadata`）与 `conversation_summaries.db`，读取耗时 <2ms 并立即关闭连接，绝不锁库、绝不修改任何会话数据。
+- **窗口吸附零权限**：通过 macOS 公开 `CGWindowListCopyWindowInfo` 读取 Antigravity 主窗口坐标，无需“辅助功能”或“屏幕录制”权限，不修改客户端安装包、不注入进程。
+- **官方额度零泄露**：只调用官方 `agy --output-format json -p /usage`（单飞防重、20 秒超时保护、本地缓存至 `~/Library/Application Support/TokenLensHUD/quota-cache.json`），零 Token 消耗，不上传任何对话或凭据。
 
-## 可以看到什么
-
-输入框旁直接看关键指标，鼠标悬停展开详情，无需打开其他面板。
-
-| 指标 | 展示内容 |
-| --- | --- |
-| **Ctx** | 上下文已用 token / 上限与占比 |
-| **tok/s** | 最近一次模型调用的输出速度 |
-| **TTFT / Hold** | 首字等待 / 缓冲返回等待时间 |
-| **Out** | 本次输出 token 数 |
-| **悬停详情** | 思考与响应/工具输出、会话累计用量 |
-| **缓存** | 缓存读取量与命中率 |
-
-上下文占用达到 **75% 变黄、90% 变红**。底部统一英文缩写，详细解释可选中英文；数据可能在单次调用完成后更新。
-
-## 管理后台服务
-
-后台服务会在登录时自动运行。需要切换提示语言、检查状态或卸载时，运行安装包解压目录里的对应脚本。
+### 管理旧版后台服务
 
 | 操作 | macOS | Windows | Linux |
 | --- | --- | --- | --- |
@@ -55,24 +83,7 @@
 | 检查状态 | `status.command` | `status.cmd` | `status.sh` |
 | 卸载 | `uninstall.command` | `uninstall.cmd` | `uninstall.sh` |
 
-安装器没有进行平台签名，首次运行可能需要系统或文件管理器确认。本次不提供 Windows ARM、Linux ARM、Intel Mac 的独立安装包。
-
-## 理解这些数字
-
-**流式速度不含等待，端到端速度包含等待。** 详情分别标注，并重复展示底部相同口径的速度；可能被缓冲的返回使用端到端速度和 `Hold` 标记。
-
-数字来自本地用量数据，未知项显示 `—`，不按文本长度猜测 token；这些是会话指标，不代表账单或账户剩余额度。
-
-<details>
-<summary>技术说明、排查与开发</summary>
-
-这是非官方的本地界面补丁，不是 VSIX 扩展。只读本地 `gen_metadata` 用量数据，通过本机调试连接添加提示条，不上传聊天或指标，不需要 API Key，也不修改应用安装包。
-
-macOS 保留旧安装目录和服务标识：`~/Library/Application Support/AGY Metrics`。Windows 使用 `%LOCALAPPDATA%/agy-token-tips`；Linux 使用 `$XDG_DATA_HOME/agy-token-tips`，默认是 `~/.local/share/agy-token-tips`。安装器保存独立副本，之后可以移动下载目录。卸载会停止服务并移除登录启动项，保留日志和版本备份，不删除 Antigravity 会话。
-
-无显示时先完成一次调用，再运行对应平台的状态脚本。`ready: true` 表示检查到了实际窗口中的组件。日志在安装目录的 `logs` 子目录；Linux 服务诊断可运行 `journalctl --user -u agy-token-tips.service -n 50`。客户端升级可能改变内部数据格式或界面属性；反馈时请附版本和脱敏错误，不要上传会话数据库。
-
-从源码开发需要 Node.js >=22.16：
+### 旧版 Node.js 源码开发（Node.js >=22.16）
 
 ```bash
 bash start.sh start --language zh-CN
@@ -81,12 +92,12 @@ npm test
 npm run demo
 ```
 
-预览使用模拟数据。Windows/Linux 仍属实验版；自动化测试和运行环境、启动脚本检查不等于客户端实机兼容性验收。详见 [协议说明](docs/protocol.md)。
+详见 [协议说明](docs/protocol.md)。
 
 </details>
 
 ## 参与贡献
 
-欢迎提 Issue / PR，共同改进兼容性、翻译和安装体验，详见 [贡献指南](CONTRIBUTING.md)。其他客户端的适配需提供真实数据来源与实机验证。
+欢迎提 Issue / PR，共同改进兼容性、翻译与多平台体验，详见 [贡献指南](CONTRIBUTING.md)。
 
-灵感来自 [船板的 Antigravity 补丁](https://github.com/Anarcadia/chuanban-antigravity-theme-patch)。本项目独立实现，未包含该项目的代码或主题资源。采用 [MIT 许可](LICENSE)，非 Google 官方项目。内置 Node.js 使用其自身许可，见 `runtime/LICENSE`。
+灵感来自 [船板的 Antigravity 补丁](https://github.com/Anarcadia/chuanban-antigravity-theme-patch)。本项目独立实现，采用 [MIT 许可](LICENSE)，非 Google 官方项目。

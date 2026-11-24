@@ -1,7 +1,9 @@
 node_modules/
 *.tgz
 *.zip
+!downloads/*.zip
 dist/
+macos-hud/dist/
 *.log
 *.db
 *.db-*

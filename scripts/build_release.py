@@ -10,6 +10,8 @@ import subprocess
 import tempfile
 import zipfile
 
+from build_macos_launcher import build_launcher
+
 ROOT = Path(__file__).resolve().parents[1]
 FILES = ['bin/agy-metrics.mjs', 'bin/desktop.mjs', 'src/cdp.mjs', 'src/database.mjs',
          'src/desktop-install.mjs', 'src/metrics.mjs', 'src/paths.mjs', 'src/messages.mjs',
@@ -50,6 +52,8 @@ def main():
                 target = folder / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(ROOT / relative, target)
+            if runtime['platform'] == 'darwin':
+                build_launcher(folder)
             (folder / 'runtime').mkdir()
             shutil.copy2(args.node, folder / f'runtime/{binary}')
             shutil.copy2(args.node_license, folder / 'runtime/LICENSE')
