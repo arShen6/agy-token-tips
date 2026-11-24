@@ -111,6 +111,7 @@ enum QuotaFetchState: Equatable {
 
 enum QuotaDateParser {
     private static let lock = NSLock()
+    private static var cache: [String: Date] = [:]
     private static let fmtFrac: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -125,8 +126,13 @@ enum QuotaDateParser {
     static func parse(_ iso: String) -> Date? {
         lock.lock()
         defer { lock.unlock() }
-        if let d = fmtFrac.date(from: iso) { return d }
-        return fmtStd.date(from: iso)
+        if let hit = cache[iso] { return hit }
+        let parsed = fmtFrac.date(from: iso) ?? fmtStd.date(from: iso)
+        if let parsed {
+            if cache.count > 64 { cache.removeAll(keepingCapacity: true) }
+            cache[iso] = parsed
+        }
+        return parsed
     }
 }
 

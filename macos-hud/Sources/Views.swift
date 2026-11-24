@@ -203,24 +203,60 @@ final class HUDViewModel: ObservableObject {
         quotaSnapshot?.group(for: activeModelFamily)
     }
 
+    private var isPollingPaused = false
+
     func startPolling() {
         refreshNow()
-        timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 0.65, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refreshNow() }
-        }
+        resumePolling()
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             self?.refreshQuota(force: false, maxAge: 180)
         }
 
         quotaTimer?.invalidate()
-        quotaTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+        let qt = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, self.showNotchIsland || self.notchState == .expanded else { return }
+                guard let self, !self.isPollingPaused || self.notchState == .expanded else { return }
                 self.refreshQuota(force: false, maxAge: 290)
             }
         }
+        qt.tolerance = 30
+        quotaTimer = qt
+    }
+
+    func pausePolling() {
+        guard !isPollingPaused else { return }
+        isPollingPaused = true
+        timer?.invalidate()
+        timer = nil
+    }
+
+    func resumePolling() {
+        isPollingPaused = false
+        if timer != nil { return }
+        let t = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshNow() }
+        }
+        t.tolerance = 0.25
+        timer = t
+    }
+
+    private func snapshotDidMeaningfullyChange(old: HUDSnapshot, new: HUDSnapshot) -> Bool {
+        if old.conversationId != new.conversationId { return true }
+        if old.title != new.title { return true }
+        if old.isRunning != new.isRunning { return true }
+        if old.syncSource != new.syncSource { return true }
+        if old.subagents.count != new.subagents.count { return true }
+        if old.combinedTotalTokens != new.combinedTotalTokens { return true }
+        if old.recentConversations.count != new.recentConversations.count { return true }
+        let om = old.metrics, nm = new.metrics
+        if om.hasData != nm.hasData { return true }
+        if om.totalCalls != nm.totalCalls { return true }
+        if om.totalTokens != nm.totalTokens { return true }
+        if om.ctxUsed != nm.ctxUsed { return true }
+        if om.model != nm.model { return true }
+        if om.latestOutput != nm.latestOutput { return true }
+        return false
     }
 
     func refreshNow() {
@@ -232,11 +268,13 @@ final class HUDViewModel: ObservableObject {
             let next = dataStore.fetchSnapshot(pinnedId: pin)
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                self.isFetching = false
+                guard self.snapshotDidMeaningfullyChange(old: self.snapshot, new: next) else { return }
+
                 let layoutChanged = self.snapshot.conversationId != next.conversationId
                     || self.snapshot.subagents.count != next.subagents.count
                     || self.snapshot.metrics.hasData != next.metrics.hasData
                 self.snapshot = next
-                self.isFetching = false
                 self.onSnapshotUpdated?()
 
                 let nextFamily = QuotaModelFamily.infer(from: next.metrics.model)
@@ -287,10 +325,16 @@ func fmtCompact(_ n: Int) -> String {
     return "\(n)"
 }
 
-func fmtInt(_ n: Int) -> String {
+@MainActor
+private let sharedIntFormatter: NumberFormatter = {
     let f = NumberFormatter()
     f.numberStyle = .decimal
-    return f.string(from: NSNumber(value: n)) ?? "\(n)"
+    return f
+}()
+
+@MainActor
+func fmtInt(_ n: Int) -> String {
+    sharedIntFormatter.string(from: NSNumber(value: n)) ?? "\(n)"
 }
 
 func fmtRate(_ v: Double?) -> String {
@@ -390,35 +434,17 @@ func shortModel(_ name: String) -> String {
         .replacingOccurrences(of: " (Low)", with: " L")
 }
 
-// MARK: - Subtle Breathing Pulse
+// MARK: - Zero-FPS Glowing Active Indicator (Avoids 120Hz ProMotion CPU Drain!)
 
 struct BreathingDot: View {
     let active: Bool
     var size: CGFloat = 5.5
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var pulse = false
 
     var body: some View {
         Circle()
             .fill(Color(red: 0.22, green: 0.74, blue: 0.97))
             .frame(width: size, height: size)
-            .shadow(color: Color(red: 0.22, green: 0.74, blue: 0.97).opacity(0.85), radius: 3)
-            .opacity(reduceMotion ? 1.0 : (pulse ? 0.30 : 1.0))
-            .onAppear {
-                guard active && !reduceMotion else { return }
-                withAnimation(.easeInOut(duration: 0.95).repeatForever(autoreverses: true)) {
-                    pulse = true
-                }
-            }
-            .onChange(of: active) { _, next in
-                if next && !reduceMotion {
-                    withAnimation(.easeInOut(duration: 0.95).repeatForever(autoreverses: true)) {
-                        pulse = true
-                    }
-                } else {
-                    pulse = false
-                }
-            }
+            .shadow(color: active ? Color(red: 0.22, green: 0.74, blue: 0.97).opacity(0.85) : .clear, radius: 2.5)
     }
 }
 
@@ -791,13 +817,10 @@ struct DynamicNotchRootView: View {
         let s = vm.snapshot
         let m = s.metrics
 
-        return TimelineView(.periodic(from: .now, by: 1)) { ctx in
-            let now = ctx.date
-
-            VStack(alignment: .leading, spacing: 9) {
-                Rectangle()
-                    .fill(Color.white.opacity(0.08))
-                    .frame(height: 0.5)
+        return VStack(alignment: .leading, spacing: 9) {
+            Rectangle()
+                .fill(Color.white.opacity(0.08))
+                .frame(height: 0.5)
 
                 // 1. Inline Session Switcher
                 HStack(spacing: 8) {
@@ -902,13 +925,17 @@ struct DynamicNotchRootView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                 }
 
-                // 2. Official Quota + Optional Swarm Tree
+                // 2. Official Quota (isolated 1s TimelineView) + Optional Swarm Tree
                 if s.subagents.isEmpty {
-                    quotaSectionCard(now: now, sideBySideGroups: true)
+                    TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                        quotaSectionCard(now: ctx.date, sideBySideGroups: true)
+                    }
                 } else {
                     HStack(alignment: .top, spacing: 9) {
-                        quotaSectionCard(now: now, sideBySideGroups: false)
-                            .frame(maxWidth: .infinity)
+                        TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                            quotaSectionCard(now: ctx.date, sideBySideGroups: false)
+                        }
+                        .frame(maxWidth: .infinity)
                         swarmTreeCard(s: s, m: m)
                             .frame(width: 248)
                     }
@@ -962,11 +989,10 @@ struct DynamicNotchRootView: View {
                         .font(.system(size: 10))
                         .foregroundStyle(Color.white.opacity(0.36))
                 }
-            }
-            .padding(.horizontal, horizontalInset)
-            .padding(.top, 2)
-            .padding(.bottom, 13)
         }
+        .padding(.horizontal, horizontalInset)
+        .padding(.top, 2)
+        .padding(.bottom, 13)
     }
 
     // MARK: Obsidian Sub-Cards

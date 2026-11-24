@@ -167,11 +167,24 @@ final class AntigravityDataStore: @unchecked Sendable {
     }
 
     private var summaryFingerprint = ""
+    private var lastSummaryReadAt: TimeInterval = 0
     private var summariesById: [String: RawSummary] = [:]
     private var childrenByParent: [String: [RawSummary]] = [:]
     private var summaryList: [RawSummary] = []
 
     private var metricsCache: [String: (fingerprint: String, metrics: ConversationMetrics)] = [:]
+    private var isoMsCache: [String: Double] = [:]
+    private var workspaceLabelCache: [String: String] = [:]
+    private let isoFmtFrac: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    private let isoFmtStd: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
 
     private static let uuidRegex = try! NSRegularExpression(
         pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -274,27 +287,45 @@ final class AntigravityDataStore: @unchecked Sendable {
 
     private func parseIsoMs(_ raw: String) -> Double {
         if raw.isEmpty { return 0 }
+        if let hit = isoMsCache[raw] { return hit }
         let normalized = raw.contains("T") ? raw : raw.replacingOccurrences(of: " ", with: "T")
-        let fmt1 = ISO8601DateFormatter()
-        fmt1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let d = fmt1.date(from: normalized) { return d.timeIntervalSince1970 * 1000.0 }
-        let fmt2 = ISO8601DateFormatter()
-        fmt2.formatOptions = [.withInternetDateTime]
-        if let d = fmt2.date(from: normalized) { return d.timeIntervalSince1970 * 1000.0 }
-        return 0
+        let ms: Double
+        if let d = isoFmtFrac.date(from: normalized) {
+            ms = d.timeIntervalSince1970 * 1000.0
+        } else if let d = isoFmtStd.date(from: normalized) {
+            ms = d.timeIntervalSince1970 * 1000.0
+        } else {
+            ms = 0
+        }
+        if isoMsCache.count > 2048 { isoMsCache.removeAll(keepingCapacity: true) }
+        isoMsCache[raw] = ms
+        return ms
     }
 
     private func parseWorkspaceLabel(_ jsonStr: String) -> String {
-        guard let data = jsonStr.data(using: .utf8),
-              let arr = try? JSONSerialization.jsonObject(with: data) as? [String],
-              let first = arr.first else { return "" }
-        let cleaned = first.replacingOccurrences(of: "file://", with: "")
-        return URL(fileURLWithPath: cleaned).lastPathComponent
+        if jsonStr.isEmpty { return "" }
+        if let hit = workspaceLabelCache[jsonStr] { return hit }
+        let label: String
+        if let data = jsonStr.data(using: .utf8),
+           let arr = try? JSONSerialization.jsonObject(with: data) as? [String],
+           let first = arr.first {
+            let cleaned = first.replacingOccurrences(of: "file://", with: "")
+            label = URL(fileURLWithPath: cleaned).lastPathComponent
+        } else {
+            label = ""
+        }
+        if workspaceLabelCache.count > 512 { workspaceLabelCache.removeAll(keepingCapacity: true) }
+        workspaceLabelCache[jsonStr] = label
+        return label
     }
 
     private func loadSummariesIfNeeded() {
+        let now = Date().timeIntervalSinceReferenceDate
+        // Avoid full summary scans more than once per 2.5s while WAL streams continuously
+        if !summaryList.isEmpty && (now - lastSummaryReadAt) < 2.5 { return }
         let fp = statFingerprint(summariesDbPath)
         if fp.hasPrefix("-|") || fp == summaryFingerprint { return }
+        lastSummaryReadAt = now
         guard let db = openReadOnly(summariesDbPath) else { return }
         defer { sqlite3_close(db) }
 
@@ -404,18 +435,20 @@ final class AntigravityDataStore: @unchecked Sendable {
 
         var records: [GenerationRecord] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
-            let idx = Int(sqlite3_column_int64(stmt, 0))
-            let len = Int(sqlite3_column_bytes(stmt, 1))
-            if len > 0, let rawPtr = sqlite3_column_blob(stmt, 1) {
-                let data = Data(bytes: rawPtr, count: len)
-                if let rec = ProtobufDecoder.decodeGeneration(idx: idx, data: data) {
-                    records.append(rec)
+            autoreleasepool {
+                let idx = Int(sqlite3_column_int64(stmt, 0))
+                let len = Int(sqlite3_column_bytes(stmt, 1))
+                if len > 0, let rawPtr = sqlite3_column_blob(stmt, 1) {
+                    let data = Data(bytes: rawPtr, count: len)
+                    if let rec = ProtobufDecoder.decodeGeneration(idx: idx, data: data) {
+                        records.append(rec)
+                    }
                 }
             }
         }
 
         let summary = summarize(records)
-        if metricsCache.count > 48 {
+        if metricsCache.count > 16 {
             metricsCache.removeValue(forKey: metricsCache.keys.first!)
         }
         metricsCache[id] = (fp, summary)

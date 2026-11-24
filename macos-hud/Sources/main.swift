@@ -229,19 +229,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func startAgyWindowTracking() {
-        windowTrackTimer?.invalidate()
-        windowTrackTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
+        guard windowTrackTimer == nil else { return }
+        let t = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.trackAntigravityWindowTick()
             }
         }
+        t.tolerance = 0.08
+        windowTrackTimer = t
+    }
+
+    private func stopAgyWindowTracking() {
+        windowTrackTimer?.invalidate()
+        windowTrackTimer = nil
+    }
+
+    private func isAntigravityOrSelfFrontmost() -> Bool {
+        let front = NSWorkspace.shared.frontmostApplication
+        let bid = front?.bundleIdentifier?.lowercased() ?? ""
+        let name = front?.localizedName?.lowercased() ?? ""
+        return bid.contains("antigravity")
+            || name.contains("antigravity")
+            || front?.processIdentifier == ProcessInfo.processInfo.processIdentifier
     }
 
     private func trackAntigravityWindowTick() {
         guard vm.placement == .bottomRight, !isUserDragging, vm.notchState == .collapsed else { return }
+        if vm.onlyWhenAgyActive && !isAntigravityOrSelfFrontmost() {
+            stopAgyWindowTracking()
+            setPanelVisible(false)
+            return
+        }
         guard let agyRect = findAntigravityWindowRect() else {
-            lastAgyWindowRect = nil
-            updateNotchVisibility()
+            if lastAgyWindowRect != nil {
+                lastAgyWindowRect = nil
+                updateNotchVisibility()
+            }
             return
         }
         let changed = lastAgyWindowRect.map {
@@ -258,7 +281,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             applyHostingAnchors()
             syncPanelFrame(animated: false)
         }
-        updateNotchVisibility()
+        if !notchPanel.isVisible {
+            updateNotchVisibility()
+        }
     }
 
     private func computeAnchoredOrigin(for agyRect: NSRect) -> NSPoint {
@@ -775,25 +800,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         updateNotchVisibility()
     }
 
+    private func setPanelVisible(_ visible: Bool) {
+        if visible {
+            if !notchPanel.isVisible {
+                notchPanel.orderFrontRegardless()
+            }
+        } else {
+            if notchPanel.isVisible {
+                notchPanel.orderOut(nil)
+            }
+        }
+    }
+
     private func updateNotchVisibility() {
-        guard let notchPanel else { return }
+        guard notchPanel != nil else { return }
         if !vm.showNotchIsland && vm.notchState != .expanded {
-            notchPanel.orderOut(nil)
+            setPanelVisible(false)
+            stopAgyWindowTracking()
+            vm.pausePolling()
             return
         }
         if !vm.onlyWhenAgyActive || vm.notchState == .expanded {
-            notchPanel.orderFrontRegardless()
+            setPanelVisible(true)
+            vm.resumePolling()
+            if vm.placement == .bottomRight { startAgyWindowTracking() }
             return
         }
-        let front = NSWorkspace.shared.frontmostApplication
-        let bid = front?.bundleIdentifier?.lowercased() ?? ""
-        let name = front?.localizedName?.lowercased() ?? ""
-        let isAgy = bid.contains("antigravity") || name.contains("antigravity") || front?.processIdentifier == ProcessInfo.processInfo.processIdentifier
-        let hasAgyWindow = (vm.placement == .topNotch) || (lastAgyWindowRect != nil) || (findAntigravityWindowRect() != nil)
-        if isAgy && hasAgyWindow {
-            notchPanel.orderFrontRegardless()
+        let isAgy = isAntigravityOrSelfFrontmost()
+        if isAgy {
+            let hasAgyWindow = (vm.placement == .topNotch) || (lastAgyWindowRect != nil) || (findAntigravityWindowRect() != nil)
+            setPanelVisible(hasAgyWindow)
+            vm.resumePolling()
+            vm.refreshNow()
+            if vm.placement == .bottomRight {
+                startAgyWindowTracking()
+                trackAntigravityWindowTick()
+            } else {
+                stopAgyWindowTracking()
+            }
         } else {
-            notchPanel.orderOut(nil)
+            setPanelVisible(false)
+            stopAgyWindowTracking()
+            vm.pausePolling()
         }
     }
 
