@@ -62,23 +62,17 @@ open macos-hud/dist/TokenLensHUD.app
 
 ---
 
-## Windows / Linux (Experimental) & Legacy Composer Bar
+## Older Versions (Windows / Linux & Legacy Composer Bar)
 
-Need Windows/Linux support, or still want the older composer-footer bar? Those packages are still here:
-
-| Platform | Download | First-time setup | Launch Antigravity |
-| --- | --- | --- | --- |
-| Windows x64 | [English](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-windows-x64-en.zip) · [Chinese](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-windows-x64-zh-CN.zip) | Double-click `install.cmd` | Double-click `start-antigravity.cmd` |
-| Linux x64 | [English](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-linux-x64-en.zip) · [Chinese](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-linux-x64-zh-CN.zip) | Run `bash install.sh` | Run `bash start-antigravity.sh` |
-| macOS (Legacy) | [Mac Launcher](https://github.com/arShen6/agy-token-tips/raw/refs/heads/main/downloads/AGY-Token-Tips-macos-arm64.zip) · [EN](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-macos-arm64-en.zip) · [ZH](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-macos-arm64-zh-CN.zip) | Double-click `install.command` | Open `AGY-Token-Tips.app` |
+Looking for the earlier v0.2.5 Electron composer-bar installers (macOS launcher, experimental Windows / Linux x64)? They remain archived on the [v0.2.5 Release page](https://github.com/arShen6/agy-token-tips/releases/tag/v0.2.5).
 
 <details>
-<summary>How it works under the hood (privacy & local data)</summary>
+<summary>How it works under the hood (privacy & performance)</summary>
 
-- **Read-only local files**: Reads `~/.gemini/antigravity/conversations/<uuid>.db` and `conversation_summaries.db` in strict `SQLITE_OPEN_READONLY` mode and closes immediately (<2ms). Nothing is ever modified or uploaded.
+- **Zero-copy incremental SQLite reader**: Reads `~/.gemini/antigravity/conversations/<uuid>.db` and `conversation_summaries.db` strictly in `SQLITE_OPEN_READONLY` mode (`PRAGMA query_only = ON`), decoding only newly added rows and closing immediately (<1ms). Nothing is ever modified or uploaded.
 - **No Accessibility permission needed**: Tracks Antigravity's window position via macOS's standard CoreGraphics window bounds API. Zero process injection.
-- **Official quota check**: Runs `agy --output-format json -p /usage` asynchronously on demand and caches locally at `~/Library/Application Support/TokenLensHUD/quota-cache.json`.
-- **Legacy source dev**: Requires Node.js >=22.16 (`npm test`, `npm run demo`). See [docs/protocol.md](docs/protocol.md).
+- **Ultra-lightweight**: Pauses all polling when Antigravity is in the background; ~0.0%–0.2% CPU and ~28 MB memory while active.
+- **Official quota check**: Runs `agy --output-format json -p /usage` asynchronously on demand (0 tokens) and caches locally at `~/Library/Application Support/TokenLensHUD/quota-cache.json`.
 
 </details>
 

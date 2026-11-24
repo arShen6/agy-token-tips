@@ -2,7 +2,6 @@
 set -euo pipefail
 
 HUD_ROOT="$(cd -- "$(dirname -- "$0")" && pwd)"
-REPO_ROOT="$(cd -- "$HUD_ROOT/.." && pwd)"
 APP="$HUD_ROOT/dist/TokenLensHUD.app"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
@@ -22,8 +21,8 @@ fi
 
 mkdir -p "$MACOS" "$RESOURCES"
 cp "$HUD_ROOT/Resources/Info.plist" "$CONTENTS/Info.plist"
-if [[ -f "$REPO_ROOT/macos/icon.icns" ]]; then
-  cp "$REPO_ROOT/macos/icon.icns" "$RESOURCES/icon.icns"
+if [[ -f "$HUD_ROOT/Resources/icon.icns" ]]; then
+  cp "$HUD_ROOT/Resources/icon.icns" "$RESOURCES/icon.icns"
 fi
 
 swiftc \

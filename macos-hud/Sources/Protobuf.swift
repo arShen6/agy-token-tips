@@ -1,7 +1,7 @@
 import Foundation
 
-/// Defensive schema-less protobuf decoder for Antigravity `gen_metadata` records.
-/// Reads only numeric telemetry, model names, and section byte counts (never stores raw text).
+/// Defensive zero-copy schema-less protobuf decoder for Antigravity `gen_metadata` records.
+/// Reads only numeric telemetry, model names, and (on latest call only) section byte counts.
 enum ProtobufDecoder {
     private static let maxReasonableTokens = 100_000_000
     private static let minContextLimit = 8_000
@@ -20,18 +20,20 @@ enum ProtobufDecoder {
         let value: FieldValue
     }
 
+    /// Zero-copy slice parser (uses `Data` SubSequence slices instead of copying 900KB buffers).
     static func parseFields(_ data: Data) throws -> [Field] {
         var result: [Field] = []
-        var offset = 0
-        let count = data.count
+        result.reserveCapacity(16)
+        var idx = data.startIndex
+        let end = data.endIndex
 
         func readVarint() throws -> UInt64 {
             var value: UInt64 = 0
             var shift: UInt64 = 0
             while shift < 70 {
-                guard offset < count else { throw NSError(domain: "PB", code: 1) }
-                let byte = data[data.startIndex + offset]
-                offset += 1
+                guard idx < end else { throw NSError(domain: "PB", code: 1) }
+                let byte = data[idx]
+                idx = data.index(after: idx)
                 value |= UInt64(byte & 0x7F) << shift
                 if (byte & 0x80) == 0 { return value }
                 shift += 7
@@ -39,7 +41,7 @@ enum ProtobufDecoder {
             throw NSError(domain: "PB", code: 2)
         }
 
-        while offset < count {
+        while idx < end {
             let tag = try readVarint()
             let fieldNum = Int(tag >> 3)
             let wire = Int(tag & 0x7)
@@ -51,21 +53,21 @@ enum ProtobufDecoder {
                 result.append(Field(number: fieldNum, value: .varint(try readVarint())))
             case 2:
                 let lenU64 = try readVarint()
-                guard lenU64 <= UInt64(count - offset) else { throw NSError(domain: "PB", code: 4) }
-                let len = Int(lenU64)
-                let start = data.startIndex + offset
-                result.append(Field(number: fieldNum, value: .bytes(data.subdata(in: start..<(start + len)))))
-                offset += len
+                let remaining = data.distance(from: idx, to: end)
+                guard lenU64 <= UInt64(remaining) else { throw NSError(domain: "PB", code: 4) }
+                let nextIdx = data.index(idx, offsetBy: Int(lenU64))
+                result.append(Field(number: fieldNum, value: .bytes(data[idx..<nextIdx])))
+                idx = nextIdx
             case 1:
-                guard offset + 8 <= count else { throw NSError(domain: "PB", code: 5) }
-                let start = data.startIndex + offset
-                result.append(Field(number: fieldNum, value: .fixed64(data.subdata(in: start..<(start + 8)))))
-                offset += 8
+                guard data.distance(from: idx, to: end) >= 8 else { throw NSError(domain: "PB", code: 5) }
+                let nextIdx = data.index(idx, offsetBy: 8)
+                result.append(Field(number: fieldNum, value: .fixed64(data[idx..<nextIdx])))
+                idx = nextIdx
             case 5:
-                guard offset + 4 <= count else { throw NSError(domain: "PB", code: 6) }
-                let start = data.startIndex + offset
-                result.append(Field(number: fieldNum, value: .fixed32(data.subdata(in: start..<(start + 4)))))
-                offset += 4
+                guard data.distance(from: idx, to: end) >= 4 else { throw NSError(domain: "PB", code: 6) }
+                let nextIdx = data.index(idx, offsetBy: 4)
+                result.append(Field(number: fieldNum, value: .fixed32(data[idx..<nextIdx])))
+                idx = nextIdx
             default:
                 throw NSError(domain: "PB", code: 7)
             }
@@ -112,13 +114,15 @@ enum ProtobufDecoder {
     private static func estimateSectionTokens(_ raw: Data) -> Int {
         var ascii = 0
         var nonAscii = 0
-        for b in raw {
-            if b < 128 { ascii += 1 } else { nonAscii += 1 }
+        raw.withUnsafeBytes { buf in
+            for b in buf {
+                if b < 128 { ascii += 1 } else { nonAscii += 1 }
+            }
         }
         return Int((Double(ascii) / 4.0 + Double(nonAscii) / 2.2).rounded())
     }
 
-    static func decodeGeneration(idx: Int, data: Data) -> GenerationRecord? {
+    static func decodeGeneration(idx: Int, data: Data, includeSections: Bool = true) -> GenerationRecord? {
         guard !data.isEmpty, let root = try? parseFields(data) else { return nil }
         let call = childFields(root, 1)
         guard !call.isEmpty else { return nil }
@@ -149,11 +153,13 @@ enum ProtobufDecoder {
         let modelDisplay = !modelDisplayRaw.isEmpty ? modelDisplayRaw : (!modelSlug.isEmpty ? modelSlug : "Unknown Model")
 
         var sections: [SectionSample] = []
-        for f in call where f.number == 16 {
-            if case .bytes(let secData) = f.value, let sub = try? parseFields(secData) {
-                let name = strField(sub, 1).trimmingCharacters(in: .whitespacesAndNewlines)
-                if let raw = lastBytes(sub, 2), !name.isEmpty, !raw.isEmpty {
-                    sections.append(SectionSample(name: name, bytes: raw.count, estTokens: estimateSectionTokens(raw)))
+        if includeSections {
+            for f in call where f.number == 16 {
+                if case .bytes(let secData) = f.value, let sub = try? parseFields(secData) {
+                    let name = strField(sub, 1).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if let raw = lastBytes(sub, 2), !name.isEmpty, !raw.isEmpty {
+                        sections.append(SectionSample(name: name, bytes: raw.count, estTokens: estimateSectionTokens(raw)))
+                    }
                 }
             }
         }

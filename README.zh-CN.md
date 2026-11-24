@@ -62,23 +62,17 @@ open macos-hud/dist/TokenLensHUD.app
 
 ---
 
-## Windows / Linux（实验版）与旧版输入框方案
+## 旧版归档（Windows / Linux 与早期输入框方案）
 
-如果你在用 Windows / Linux，或者就喜欢旧版嵌在输入框旁的条子，原有安装包依然保留：
-
-| 平台 | 下载安装包 | 首次安装 | 日常启动 Antigravity |
-| --- | --- | --- | --- |
-| Windows x64 | [中文版](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-windows-x64-zh-CN.zip) · [英文版](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-windows-x64-en.zip) | 双击 `install.cmd` | 双击 `start-antigravity.cmd` |
-| Linux x64 | [中文版](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-linux-x64-zh-CN.zip) · [英文版](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-linux-x64-en.zip) | 运行 `bash install.sh` | 运行 `bash start-antigravity.sh` |
-| macOS（旧版） | [Mac 启动器](https://github.com/arShen6/agy-token-tips/raw/refs/heads/main/downloads/AGY-Token-Tips-macos-arm64.zip) · [中文版](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-macos-arm64-zh-CN.zip) · [英文版](https://github.com/arShen6/agy-token-tips/releases/download/v0.2.5/agy-token-tips-0.2.5-macos-arm64-en.zip) | 双击 `install.command` | 点 `AGY-Token-Tips.app` |
+如果你需要更早的 v0.2.5 方案（旧 macOS 启动器，或 Windows / Linux x64 实验版），完整历史安装包依然永久保留在 [v0.2.5 Release 页面](https://github.com/arShen6/agy-token-tips/releases/tag/v0.2.5)。
 
 <details>
-<summary>隐私与技术细节（给好奇怎么实现的同学）</summary>
+<summary>隐私、性能与实现细节（给好奇怎么做的同学）</summary>
 
-- **只读本地记录，不上传任何数据**：以严格只读模式读取本机 `~/.gemini/antigravity/conversations/<uuid>.db` 和 `conversation_summaries.db`，读完立即关闭（<2ms），绝不改写你的聊天记录。
+- **增量只读本地库，不上传任何数据**：以严格只读模式（`SQLITE_OPEN_READONLY`）读取 `~/.gemini/antigravity/conversations/<uuid>.db` 和 `conversation_summaries.db`，历史行零重读、零拷贝切片，读完立即关闭（<1ms），绝不改写你的聊天记录。
 - **不索要辅助功能权限**：用 macOS 公开的 CoreGraphics 窗口坐标接口贴合 AGY 窗口，不注入进程、不修改 Antigravity 安装包。
+- **极低资源占用**：切去其他应用时自动暂停全部轮询，活跃态实测约 **0.0%–0.2% CPU / ~28 MB 内存**，几乎零存在感。
 - **官方额度来源**：后台按需调用本机 `agy --output-format json -p /usage`，本地缓存到 `~/Library/Application Support/TokenLensHUD/quota-cache.json`，不消耗 Token，不接触账号密码。
-- **旧版 Node.js 源码开发**：需要 Node.js >=22.16（`npm test`、`npm run demo`），详见 [协议说明](docs/protocol.md)。
 
 </details>
 

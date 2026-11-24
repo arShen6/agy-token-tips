@@ -166,13 +166,22 @@ final class AntigravityDataStore: @unchecked Sendable {
         let parentId: String
     }
 
+    private struct CachedConversationState {
+        let fingerprint: String
+        let rowCount: Int
+        let maxIdx: Int
+        let records: [GenerationRecord]
+        let metrics: ConversationMetrics
+    }
+
     private var summaryFingerprint = ""
     private var lastSummaryReadAt: TimeInterval = 0
     private var summariesById: [String: RawSummary] = [:]
     private var childrenByParent: [String: [RawSummary]] = [:]
     private var summaryList: [RawSummary] = []
+    private var cachedRootCandidates: [ConversationSummaryItem] = []
 
-    private var metricsCache: [String: (fingerprint: String, metrics: ConversationMetrics)] = [:]
+    private var metricsCache: [String: CachedConversationState] = [:]
     private var isoMsCache: [String: Double] = [:]
     private var workspaceLabelCache: [String: String] = [:]
     private let isoFmtFrac: ISO8601DateFormatter = {
@@ -374,6 +383,35 @@ final class AntigravityDataStore: @unchecked Sendable {
         self.summariesById = byId
         self.childrenByParent = children
         self.summaryList = list
+
+        var rootsMap: [String: ConversationSummaryItem] = [:]
+        for item in list {
+            let rootId = resolveRootId(item.id)
+            let rootMeta = byId[rootId] ?? item
+            let actMs = max(item.lastModifiedMs, rootMeta.lastModifiedMs)
+            let running = item.isRunning || rootMeta.isRunning
+            if let existing = rootsMap[rootId] {
+                rootsMap[rootId] = ConversationSummaryItem(
+                    id: rootId,
+                    title: existing.title,
+                    workspaceLabel: existing.workspaceLabel,
+                    isRunning: existing.isRunning || running,
+                    activityMs: max(existing.activityMs, actMs),
+                    childCount: existing.childCount
+                )
+            } else {
+                let title = !rootMeta.title.isEmpty ? rootMeta.title : "Conversation \(rootId.prefix(8))"
+                rootsMap[rootId] = ConversationSummaryItem(
+                    id: rootId,
+                    title: title,
+                    workspaceLabel: rootMeta.workspaceLabel,
+                    isRunning: running,
+                    activityMs: actMs,
+                    childCount: (children[rootId] ?? []).count
+                )
+            }
+        }
+        self.cachedRootCandidates = Array(rootsMap.values.sorted { $0.activityMs > $1.activityMs }.prefix(24))
     }
 
     private func resolveRootId(_ id: String) -> String {
@@ -426,21 +464,51 @@ final class AntigravityDataStore: @unchecked Sendable {
         }
         defer { sqlite3_close(db) }
 
+        // Check row count & max idx first (O(1) on SQLite B-tree) for true incremental reads!
+        var rowCount = 0
+        var dbMaxIdx = -1
+        var metaStmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, "SELECT COUNT(*), COALESCE(MAX(idx), -1) FROM gen_metadata;", -1, &metaStmt, nil) == SQLITE_OK, let metaStmt {
+            if sqlite3_step(metaStmt) == SQLITE_ROW {
+                rowCount = Int(sqlite3_column_int64(metaStmt, 0))
+                dbMaxIdx = Int(sqlite3_column_int64(metaStmt, 1))
+            }
+            sqlite3_finalize(metaStmt)
+        }
+
+        var records: [GenerationRecord]
+        let startIdx: Int
+        if let cached = metricsCache[id], rowCount >= cached.rowCount, cached.maxIdx >= 0, dbMaxIdx >= cached.maxIdx {
+            // Keep all historical rows unchanged; only re-read the tail row + any brand-new rows!
+            records = cached.records.filter { $0.index < cached.maxIdx }
+            startIdx = cached.maxIdx
+        } else {
+            records = []
+            startIdx = Int.min
+        }
+
         var stmt: OpaquePointer?
-        let sql = "SELECT idx, data FROM gen_metadata ORDER BY idx ASC;"
+        let sql = startIdx == Int.min
+            ? "SELECT idx, data FROM gen_metadata ORDER BY idx ASC;"
+            : "SELECT idx, data FROM gen_metadata WHERE idx >= ? ORDER BY idx ASC;"
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else {
             return metricsCache[id]?.metrics ?? .empty
         }
         defer { sqlite3_finalize(stmt) }
+        if startIdx != Int.min {
+            sqlite3_bind_int64(stmt, 1, Int64(startIdx))
+        }
 
-        var records: [GenerationRecord] = []
+        // Only parse heavy 100KB+ prompt sections on the latest 2 rows!
+        let sectionCutoffIdx = max(0, dbMaxIdx - 1)
         while sqlite3_step(stmt) == SQLITE_ROW {
             autoreleasepool {
                 let idx = Int(sqlite3_column_int64(stmt, 0))
                 let len = Int(sqlite3_column_bytes(stmt, 1))
                 if len > 0, let rawPtr = sqlite3_column_blob(stmt, 1) {
-                    let data = Data(bytes: rawPtr, count: len)
-                    if let rec = ProtobufDecoder.decodeGeneration(idx: idx, data: data) {
+                    let data = Data(bytesNoCopy: UnsafeMutableRawPointer(mutating: rawPtr), count: len, deallocator: .none)
+                    let parseSec = (idx >= sectionCutoffIdx)
+                    if let rec = ProtobufDecoder.decodeGeneration(idx: idx, data: data, includeSections: parseSec) {
                         records.append(rec)
                     }
                 }
@@ -451,7 +519,13 @@ final class AntigravityDataStore: @unchecked Sendable {
         if metricsCache.count > 16 {
             metricsCache.removeValue(forKey: metricsCache.keys.first!)
         }
-        metricsCache[id] = (fp, summary)
+        metricsCache[id] = CachedConversationState(
+            fingerprint: fp,
+            rowCount: rowCount,
+            maxIdx: dbMaxIdx,
+            records: records,
+            metrics: summary
+        )
         return summary
     }
 
@@ -627,51 +701,7 @@ final class AntigravityDataStore: @unchecked Sendable {
     func fetchSnapshot(pinnedId: String?) -> HUDSnapshot {
         loadSummariesIfNeeded()
 
-        var rootsMap: [String: ConversationSummaryItem] = [:]
-        for item in summaryList {
-            let rootId = resolveRootId(item.id)
-            let rootMeta = summariesById[rootId] ?? item
-            let actMs = max(item.lastModifiedMs, rootMeta.lastModifiedMs)
-            let running = item.isRunning || rootMeta.isRunning
-            if let existing = rootsMap[rootId] {
-                rootsMap[rootId] = ConversationSummaryItem(
-                    id: rootId,
-                    title: existing.title,
-                    workspaceLabel: existing.workspaceLabel,
-                    isRunning: existing.isRunning || running,
-                    activityMs: max(existing.activityMs, actMs),
-                    childCount: existing.childCount
-                )
-            } else {
-                let title = !rootMeta.title.isEmpty ? rootMeta.title : "Conversation \(rootId.prefix(8))"
-                rootsMap[rootId] = ConversationSummaryItem(
-                    id: rootId,
-                    title: title,
-                    workspaceLabel: rootMeta.workspaceLabel,
-                    isRunning: running,
-                    activityMs: actMs,
-                    childCount: (childrenByParent[rootId] ?? []).count
-                )
-            }
-        }
-
-        var candidates = Array(rootsMap.values.sorted { $0.activityMs > $1.activityMs }.prefix(24))
-        // Refine with real .db-wal mtime so live replies jump to #1 immediately
-        for i in 0..<candidates.count {
-            let cid = candidates[i].id
-            var bestMs = max(candidates[i].activityMs, fileLiveMtimeMs(conversationsDir.appendingPathComponent("\(cid).db").path))
-            for ch in childrenByParent[cid] ?? [] {
-                bestMs = max(bestMs, fileLiveMtimeMs(conversationsDir.appendingPathComponent("\(ch.id).db").path))
-            }
-            if bestMs > candidates[i].activityMs {
-                let c = candidates[i]
-                candidates[i] = ConversationSummaryItem(
-                    id: c.id, title: c.title, workspaceLabel: c.workspaceLabel,
-                    isRunning: c.isRunning, activityMs: bestMs, childCount: c.childCount
-                )
-            }
-        }
-        candidates.sort { $0.activityMs > $1.activityMs }
+        var candidates = cachedRootCandidates
 
         let targetId: String?
         let syncSource: String
@@ -682,6 +712,22 @@ final class AntigravityDataStore: @unchecked Sendable {
             targetId = resolveRootId(winId)
             syncSource = "window"
         } else {
+            // Only stat recent `.db-wal` files when falling back to auto-mtime ordering
+            for i in 0..<min(10, candidates.count) {
+                let cid = candidates[i].id
+                var bestMs = max(candidates[i].activityMs, fileLiveMtimeMs(conversationsDir.appendingPathComponent("\(cid).db").path))
+                for ch in childrenByParent[cid] ?? [] {
+                    bestMs = max(bestMs, fileLiveMtimeMs(conversationsDir.appendingPathComponent("\(ch.id).db").path))
+                }
+                if bestMs > candidates[i].activityMs {
+                    let c = candidates[i]
+                    candidates[i] = ConversationSummaryItem(
+                        id: c.id, title: c.title, workspaceLabel: c.workspaceLabel,
+                        isRunning: c.isRunning, activityMs: bestMs, childCount: c.childCount
+                    )
+                }
+            }
+            candidates.sort { $0.activityMs > $1.activityMs }
             targetId = candidates.first?.id
             syncSource = "auto"
         }
