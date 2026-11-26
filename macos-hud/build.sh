@@ -32,6 +32,7 @@ swiftc \
   -framework AppKit \
   -framework SwiftUI \
   -framework CoreGraphics \
+  -framework CFNetwork \
   -lsqlite3 \
   "$HUD_ROOT/Sources/Protobuf.swift" \
   "$HUD_ROOT/Sources/DataStore.swift" \

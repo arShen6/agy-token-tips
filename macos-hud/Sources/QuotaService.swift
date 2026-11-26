@@ -1,3 +1,4 @@
+import CFNetwork
 import Darwin
 import Foundation
 
@@ -338,6 +339,13 @@ final class QuotaService: @unchecked Sendable {
             var envDict = ProcessInfo.processInfo.environment
             let extraPath = "\(home)/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
             envDict["PATH"] = (envDict["PATH"]?.isEmpty == false) ? "\(extraPath):\(envDict["PATH"]!)" : extraPath
+            // Inherit macOS System Proxy dynamically (critical for Finder / Login Item / LaunchAgent runs!)
+            Self.injectMacOSSystemProxy(into: &envDict)
+            // Prevent background `agy /usage` from ever hijacking the user's browser with interactive OAuth popups
+            envDict["BROWSER"] = "/usr/bin/false"
+            if envDict["SSH_CONNECTION"] == nil {
+                envDict["SSH_CONNECTION"] = "127.0.0.1 1 127.0.0.1 22"
+            }
             let envStrings = envDict.map { "\($0.key)=\($0.value)" }
 
             let cArgs = args.map { strdup($0) } + [nil]
@@ -367,6 +375,7 @@ final class QuotaService: @unchecked Sendable {
             var aborting = false
             var delivered = false
             var timedOut = false
+            var authPromptDetected = false
             var childExited = false
             var exitCode: Int32 = -1
             var outClosed = false
@@ -402,7 +411,7 @@ final class QuotaService: @unchecked Sendable {
                 outSource = nil
                 errSource = nil
 
-                if timedOut {
+                if timedOut || authPromptDetected {
                     _ = Darwin.kill(-pid, SIGKILL)
                 }
                 if !childExited {
@@ -411,6 +420,11 @@ final class QuotaService: @unchecked Sendable {
                     if r == pid || r < 0 {
                         childExited = true
                     }
+                }
+
+                if authPromptDetected {
+                    completion(nil, .notSignedIn)
+                    return
                 }
 
                 if timedOut {
@@ -483,10 +497,31 @@ final class QuotaService: @unchecked Sendable {
                 }
             }
 
+            func checkAuthPromptAbort(_ data: Data) {
+                guard !authPromptDetected, !delivered, !aborting, !data.isEmpty else { return }
+                let tailSlice = data.suffix(2048)
+                guard let text = String(data: tailSlice, encoding: .utf8)?.lowercased() else { return }
+                if text.contains("accounts.google.com/o/oauth")
+                    || text.contains("if your browser didn't open")
+                    || text.contains("paste the authorization code")
+                    || text.contains("enter the authorization code") {
+                    authPromptDetected = true
+                    _ = Darwin.kill(-pid, SIGKILL)
+                    if !childExited {
+                        var ws: Int32 = 0
+                        _ = Darwin.waitpid(pid, &ws, 0)
+                        childExited = true
+                    }
+                    forceCloseAndFinish()
+                }
+            }
+
             // 1. Non-blocking stdout reader (clears handlers on cancel -> zero retain cycles)
             let os = DispatchSource.makeReadSource(fileDescriptor: outFD, queue: self.ioQueue)
             os.setEventHandler {
-                if drainFD(outFD, into: &stdoutData) {
+                let eof = drainFD(outFD, into: &stdoutData)
+                checkAuthPromptAbort(stdoutData)
+                if eof {
                     outSource?.setEventHandler(handler: nil)
                     outSource?.cancel()
                 }
@@ -506,7 +541,9 @@ final class QuotaService: @unchecked Sendable {
             // 2. Non-blocking stderr reader (clears handlers on cancel -> zero retain cycles)
             let es = DispatchSource.makeReadSource(fileDescriptor: errFD, queue: self.ioQueue)
             es.setEventHandler {
-                if drainFD(errFD, into: &stderrData) {
+                let eof = drainFD(errFD, into: &stderrData)
+                checkAuthPromptAbort(stderrData)
+                if eof {
                     errSource?.setEventHandler(handler: nil)
                     errSource?.cancel()
                 }
@@ -668,6 +705,62 @@ final class QuotaService: @unchecked Sendable {
 
         guard !groups.isEmpty else { return nil }
         return QuotaSnapshot(fetchedAt: Date(), groups: groups, source: "cli")
+    }
+
+    private static func injectMacOSSystemProxy(into env: inout [String: String]) {
+        guard let cfDict = CFNetworkCopySystemProxySettings()?.takeRetainedValue() as? [String: Any] else {
+            return
+        }
+
+        let hasHTTPS = !(env["HTTPS_PROXY"] ?? env["https_proxy"] ?? "").isEmpty
+        let hasHTTP = !(env["HTTP_PROXY"] ?? env["http_proxy"] ?? "").isEmpty
+
+        if !hasHTTPS,
+           (cfDict[kCFNetworkProxiesHTTPSEnable as String] as? NSNumber)?.intValue == 1,
+           let host = cfDict[kCFNetworkProxiesHTTPSProxy as String] as? String, !host.isEmpty,
+           let port = (cfDict[kCFNetworkProxiesHTTPSPort as String] as? NSNumber)?.intValue, port > 0 {
+            let url = "http://\(host):\(port)"
+            env["HTTPS_PROXY"] = url
+            env["https_proxy"] = url
+        }
+
+        if !hasHTTP,
+           (cfDict[kCFNetworkProxiesHTTPEnable as String] as? NSNumber)?.intValue == 1,
+           let host = cfDict[kCFNetworkProxiesHTTPProxy as String] as? String, !host.isEmpty,
+           let port = (cfDict[kCFNetworkProxiesHTTPPort as String] as? NSNumber)?.intValue, port > 0 {
+            let url = "http://\(host):\(port)"
+            env["HTTP_PROXY"] = url
+            env["http_proxy"] = url
+        }
+
+        let nowHasHTTPOrHTTPS = !(env["HTTPS_PROXY"] ?? env["https_proxy"] ?? env["HTTP_PROXY"] ?? env["http_proxy"] ?? "").isEmpty
+        if nowHasHTTPOrHTTPS {
+            // Avoid conflicting socks5:// ALL_PROXY on mixed-port proxies (e.g., Clash 7897)
+            if let ap = env["ALL_PROXY"], ap.lowercased().hasPrefix("socks") { env.removeValue(forKey: "ALL_PROXY") }
+            if let ap = env["all_proxy"], ap.lowercased().hasPrefix("socks") { env.removeValue(forKey: "all_proxy") }
+        } else if (env["ALL_PROXY"] ?? env["all_proxy"] ?? "").isEmpty,
+                  (cfDict[kCFNetworkProxiesSOCKSEnable as String] as? NSNumber)?.intValue == 1,
+                  let host = cfDict[kCFNetworkProxiesSOCKSProxy as String] as? String, !host.isEmpty,
+                  let port = (cfDict[kCFNetworkProxiesSOCKSPort as String] as? NSNumber)?.intValue, port > 0 {
+            let url = "socks5h://\(host):\(port)"
+            env["ALL_PROXY"] = url
+            env["all_proxy"] = url
+        }
+
+        if (env["NO_PROXY"] ?? env["no_proxy"] ?? "").isEmpty {
+            var noProxy = ["localhost", "127.0.0.1", "::1"]
+            if let exceptions = cfDict[kCFNetworkProxiesExceptionsList as String] as? [String] {
+                for ex in exceptions {
+                    let trimmed = ex.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty && !trimmed.hasPrefix("<") && !noProxy.contains(trimmed) {
+                        noProxy.append(trimmed)
+                    }
+                }
+            }
+            let joined = noProxy.joined(separator: ",")
+            env["NO_PROXY"] = joined
+            env["no_proxy"] = joined
+        }
     }
 
     private static func inferGroupFamily(name: String, desc: String, buckets: [QuotaBucket]) -> QuotaModelFamily {
